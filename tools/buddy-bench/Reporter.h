@@ -29,28 +29,26 @@ namespace bench {
 
 struct EnvInfo;
 
-/// A model-specific metric aggregated across reps: {name, mean, stddev}.
-struct ExtraMetric {
+/// One numeric metric, aggregated across reps: {name, mean, sample stddev}.
+struct Metric {
   std::string name;
   double avg = 0;
   double stddev = 0;
 };
 
 /// One output row, decoupled from the runtime-level BenchmarkResult.
+///
+/// Identity (model, category, configuration) stays scalar; every numeric result
+/// is a named Metric in `metrics`, so the report adapts to whatever the model's
+/// field table lists instead of hardcoding a fixed set of columns.
 struct BenchmarkRecord {
   std::string model;
-  std::string test;            // "pp" (prefill) / "tg" (decode) / "pg" (both)
-  int nPrompt = 0;             // -p
-  int nGen = 0;                // -n
-  double prefillTps = 0;       // prefill tokens/s (avg)
-  double decodeTps = 0;        // decode tokens/s (avg)
-  double prefillTpsStddev = 0; // prefill tokens/s (sample stddev)
-  double decodeTpsStddev = 0;  // decode tokens/s (sample stddev)
-  double avgSecs = 0;          // total time (avg)
-  double stddevSecs = 0;       // total time (sample stddev)
-  int reps = 0;                // number of repetitions
-  /// Model-specific metrics, aggregated by name across reps. Empty for LLM.
-  std::vector<ExtraMetric> extraMetrics;
+  std::string test; // "pp" (prefill) / "tg" (decode) / "pg" (both) / "forward"
+  int nPrompt = 0;  // -p
+  int nGen = 0;     // -n
+  int reps = 0;     // number of repetitions
+  /// All numeric results in report order, each aggregated across reps.
+  std::vector<Metric> metrics;
 };
 
 /// Render all records as a Markdown table.

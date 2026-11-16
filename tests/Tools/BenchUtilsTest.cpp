@@ -39,6 +39,7 @@ using buddy::bench::BenchmarkRecord;
 using buddy::bench::buildConfigs;
 using buddy::bench::EnvInfo;
 using buddy::bench::expandIntList;
+using buddy::bench::Metric;
 using buddy::bench::parseIntRange;
 using buddy::bench::renderCsv;
 using buddy::bench::renderJson;
@@ -60,6 +61,22 @@ namespace {
   } while (0)
 
 bool near(double a, double b) { return std::fabs(a - b) < 1e-9; }
+
+// The report is name-keyed now, so tests look metrics up by name.
+const Metric *metric(const BenchmarkRecord &r, const std::string &name) {
+  for (const auto &m : r.metrics)
+    if (m.name == name)
+      return &m;
+  return nullptr;
+}
+double metricAvg(const BenchmarkRecord &r, const std::string &name) {
+  const Metric *m = metric(r, name);
+  return m ? m->avg : 0.0;
+}
+double metricSd(const BenchmarkRecord &r, const std::string &name) {
+  const Metric *m = metric(r, name);
+  return m ? m->stddev : 0.0;
+}
 
 template <typename Fn> bool throwsValidationError(Fn fn) {
   try {
@@ -196,12 +213,12 @@ bool testSummarize() {
   CHECK_TRUE(rec.nGen == 10);
   CHECK_TRUE(rec.reps == 2);
   // prefill: 128/1 and 128/2 -> mean 96.
-  CHECK_TRUE(near(rec.prefillTps, 96.0));
+  CHECK_TRUE(near(metricAvg(rec, "prefill_tps"), 96.0));
   // decode: 10/1 and 5/2 -> mean 6.25.
-  CHECK_TRUE(near(rec.decodeTps, 6.25));
-  CHECK_TRUE(near(rec.avgSecs, 3.0));
-  CHECK_TRUE(near(rec.prefillTpsStddev, stdev({128.0, 64.0})));
-  CHECK_TRUE(near(rec.decodeTpsStddev, stdev({10.0, 2.5})));
+  CHECK_TRUE(near(metricAvg(rec, "decode_tps"), 6.25));
+  CHECK_TRUE(near(metricAvg(rec, "avg_s"), 3.0));
+  CHECK_TRUE(near(metricSd(rec, "prefill_tps"), stdev({128.0, 64.0})));
+  CHECK_TRUE(near(metricSd(rec, "decode_tps"), stdev({10.0, 2.5})));
 
   // Without an explicit work length, the requested prompt length is used.
   std::vector<BenchmarkResult> plain(1);
@@ -211,7 +228,7 @@ bool testSummarize() {
   plain[0].decodeSecs = 0.0;
   auto pp = summarize("m", plain, false);
   CHECK_TRUE(pp.test == "pp");
-  CHECK_TRUE(near(pp.prefillTps, 32.0));
+  CHECK_TRUE(near(metricAvg(pp, "prefill_tps"), 32.0));
 
   // Decode-only classification. The runner's seed prefill is setup, not part
   // of the measured decode, so a tg row reports no prefill throughput and
@@ -229,11 +246,11 @@ bool testSummarize() {
   tg[1].decodeSecs = 2.0;
   auto tgRec = summarize("m", tg, false);
   CHECK_TRUE(tgRec.test == "tg");
-  CHECK_TRUE(near(tgRec.decodeTps, 6.0)); // (8/1 + 8/2) / 2
-  CHECK_TRUE(near(tgRec.prefillTps, 0.0));
-  CHECK_TRUE(near(tgRec.prefillTpsStddev, 0.0));
-  CHECK_TRUE(near(tgRec.avgSecs, 1.5));
-  CHECK_TRUE(near(tgRec.stddevSecs, stdev({1.0, 2.0})));
+  CHECK_TRUE(near(metricAvg(tgRec, "decode_tps"), 6.0)); // (8/1 + 8/2) / 2
+  CHECK_TRUE(near(metricAvg(tgRec, "prefill_tps"), 0.0));
+  CHECK_TRUE(near(metricSd(tgRec, "prefill_tps"), 0.0));
+  CHECK_TRUE(near(metricAvg(tgRec, "avg_s"), 1.5));
+  CHECK_TRUE(near(metricSd(tgRec, "avg_s"), stdev({1.0, 2.0})));
 
   // Forward mode classification and extra-metric aggregation.
   std::vector<BenchmarkResult> fwd(2);
@@ -243,9 +260,8 @@ bool testSummarize() {
   fwd[1].extraMetrics = {{"images_per_sec", 4.0}};
   auto fwdRec = summarize("m", fwd, true);
   CHECK_TRUE(fwdRec.test == "forward");
-  CHECK_TRUE(fwdRec.extraMetrics.size() == 1);
-  CHECK_TRUE(fwdRec.extraMetrics[0].name == "images_per_sec");
-  CHECK_TRUE(near(fwdRec.extraMetrics[0].avg, 3.0));
+  CHECK_TRUE(metric(fwdRec, "images_per_sec") != nullptr);
+  CHECK_TRUE(near(metricAvg(fwdRec, "images_per_sec"), 3.0));
   return true;
 }
 
@@ -266,21 +282,21 @@ bool testReporter() {
   r.test = "pg";
   r.nPrompt = 8;
   r.nGen = 4;
-  r.prefillTps = std::nan("");
-  r.decodeTps = INFINITY;
-  r.prefillTpsStddev = 0.5;
-  r.decodeTpsStddev = 0;
-  r.avgSecs = 1.25;
-  r.stddevSecs = 0;
   r.reps = 1;
-  r.extraMetrics = {{"images_per_sec", 12.5, 0.5}};
+  r.metrics = {{"prefill_tps", std::nan(""), 0.5},
+               {"decode_tps", INFINITY, 0.0},
+               {"avg_s", 1.25, 0.0},
+               {"images_per_sec", 12.5, 0.5}};
 
   const std::string json = renderJson({r}, env);
-  // JSON has no NaN / Infinity: both become null.
-  CHECK_TRUE(json.find("\"prefill_tps\":null") != std::string::npos);
-  CHECK_TRUE(json.find("\"decode_tps\":null") != std::string::npos);
+  // JSON has no NaN / Infinity: both become null inside the metric object.
+  CHECK_TRUE(json.find("\"prefill_tps\":{\"avg\":null") != std::string::npos);
+  CHECK_TRUE(json.find("\"decode_tps\":{\"avg\":null") != std::string::npos);
   CHECK_TRUE(json.find("nan") == std::string::npos);
   CHECK_TRUE(json.find("inf") == std::string::npos);
+  // Identity scalars stay flat; metrics carry their stddev alongside the mean.
+  CHECK_TRUE(json.find("\"reps\":1") != std::string::npos);
+  CHECK_TRUE(json.find("\"avg_s\":{\"avg\":1.25") != std::string::npos);
   // Quotes are escaped, including in env strings, and newlines become \n.
   CHECK_TRUE(json.find("\"model\":\"m|delim,\\\"q\\\"\"") != std::string::npos);
   CHECK_TRUE(json.find("\"cpu_model\":\"cpu \\\"name\\\"\\nline\"") !=
@@ -298,8 +314,11 @@ bool testReporter() {
   CHECK_TRUE(jsonl.find('\n') != std::string::npos);
   CHECK_TRUE(jsonl.find("\"test\":\"pg\"") != std::string::npos);
 
-  // CSV: a field with a comma or quote is quoted, inner quotes doubled.
+  // CSV: header lists every metric as a mean + sd pair; a field with a comma or
+  // quote is quoted, inner quotes doubled.
   const std::string csv = renderCsv({r});
+  CHECK_TRUE(csv.find("model,test,n_prompt,n_gen,reps,prefill_tps,"
+                      "prefill_tps_sd,") == 0);
   CHECK_TRUE(csv.find("\n\"m|delim,\"\"q\"\"\",pg,") != std::string::npos);
 
   // Markdown: a pipe is escaped so the table keeps its columns.

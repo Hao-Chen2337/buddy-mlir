@@ -3,6 +3,7 @@
 # Pure helpers (no model / runtime state) shared with the unit test.
 add_library(buddy-bench-utils STATIC
   BenchUtils.cpp
+  Fields.cpp
   Reporter.cpp
   Stats.cpp)
 target_compile_features(buddy-bench-utils PUBLIC cxx_std_17)

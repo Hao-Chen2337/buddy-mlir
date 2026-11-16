@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "BenchUtils.h"
+#include "Fields.h"
 #include "Stats.h"
 
 #include <cstdint>
@@ -132,50 +133,69 @@ buildConfigs(bool forwardMode, const std::vector<std::string> &nGenSpecs,
   return configs;
 }
 
+namespace {
+
+/// The decoder field table: every numeric column a decoder model reports, in
+/// report order. Each entry derives one number from one raw sample; `summarize`
+/// aggregates the entries across reps. This keeps the LLM numerics identical to
+/// the previous hardcoded columns while making them data-driven.
+std::vector<Field> decoderFields(bool decodeOnly) {
+  SampleGetter prefillTokens = [](const buddy::runtime::BenchmarkResult &s) {
+    return s.prefillWorkLen > 0 ? static_cast<double>(s.prefillWorkLen)
+                                : static_cast<double>(s.nPrompt);
+  };
+  SampleGetter genTokens = [](const buddy::runtime::BenchmarkResult &s) {
+    return static_cast<double>(s.nGen);
+  };
+  SampleGetter prefillSecs = [](const buddy::runtime::BenchmarkResult &s) {
+    return s.prefillSecs;
+  };
+  SampleGetter decodeSecs = [](const buddy::runtime::BenchmarkResult &s) {
+    return s.decodeSecs;
+  };
+  SampleGetter totalSecs = [](const buddy::runtime::BenchmarkResult &s) {
+    return s.prefillSecs + s.decodeSecs;
+  };
+
+  std::vector<Field> fields;
+  if (decodeOnly)
+    fields.push_back(
+        Field{"prefill_tps",
+              [](const buddy::runtime::BenchmarkResult &) { return 0.0; }});
+  else
+    fields.push_back(Throughput("prefill_tps", prefillTokens, prefillSecs));
+  fields.push_back(Throughput("decode_tps", genTokens, decodeSecs));
+  fields.push_back(Latency("avg_s", decodeOnly ? decodeSecs : totalSecs));
+  return fields;
+}
+
+} // namespace
+
 BenchmarkRecord
 summarize(const std::string &model,
           const std::vector<buddy::runtime::BenchmarkResult> &samples,
           bool forwardMode) {
-  std::vector<double> prefillSecs, decodeSecs, totalSecs;
-  std::vector<int> prefillTokens, genTokens;
-  prefillSecs.reserve(samples.size());
-  decodeSecs.reserve(samples.size());
-  totalSecs.reserve(samples.size());
-  prefillTokens.reserve(samples.size());
-  genTokens.reserve(samples.size());
-  for (const auto &s : samples) {
-    prefillSecs.push_back(s.prefillSecs);
-    decodeSecs.push_back(s.decodeSecs);
-    totalSecs.push_back(s.prefillSecs + s.decodeSecs);
-    // Tiered KV pads the prompt; divide by the work actually done.
-    prefillTokens.push_back(s.prefillWorkLen > 0 ? s.prefillWorkLen
-                                                 : s.nPrompt);
-    genTokens.push_back(s.nGen);
-  }
-
   const int nPrompt = samples.empty() ? 0 : samples.front().nPrompt;
   const int nGen = samples.empty() ? 0 : samples.front().nGen;
 
   // tg times decode alone: the seed prefill is setup, so report no prefill tps.
   const bool decodeOnly = !forwardMode && nPrompt == 0;
 
-  const auto prefillTps = tokensPerSecPerSample(prefillSecs, prefillTokens);
-  const auto decodeTps = tokensPerSecPerSample(decodeSecs, genTokens);
-  const auto &timedSecs = decodeOnly ? decodeSecs : totalSecs;
-
   BenchmarkRecord rec;
   rec.model = model;
   rec.nPrompt = nPrompt;
   rec.nGen = nGen;
   rec.reps = static_cast<int>(samples.size());
-  rec.prefillTps = decodeOnly ? 0.0 : avg(prefillTps);
-  rec.decodeTps = avg(decodeTps);
-  rec.prefillTpsStddev = decodeOnly ? 0.0 : stdev(prefillTps);
-  rec.decodeTpsStddev = stdev(decodeTps);
-  rec.avgSecs = avg(timedSecs);
-  rec.stddevSecs = stdev(timedSecs);
 
-  // Aggregate model-specific extra metrics by name across the samples.
+  // Derive and aggregate the decoder field table, then any model-specific
+  // extra metrics; both become first-class named metrics in report order.
+  for (const Field &f : decoderFields(decodeOnly)) {
+    std::vector<double> values;
+    values.reserve(samples.size());
+    for (const auto &s : samples)
+      values.push_back(f.getter(s));
+    rec.metrics.push_back(Metric{f.name, avg(values), stdev(values)});
+  }
   if (!samples.empty()) {
     for (const auto &first : samples.front().extraMetrics) {
       std::vector<double> values;
@@ -186,11 +206,7 @@ summarize(const std::string &model,
             values.push_back(m.second);
       if (values.empty())
         continue;
-      ExtraMetric em;
-      em.name = first.first;
-      em.avg = avg(values);
-      em.stddev = stdev(values);
-      rec.extraMetrics.push_back(em);
+      rec.metrics.push_back(Metric{first.first, avg(values), stdev(values)});
     }
   }
 

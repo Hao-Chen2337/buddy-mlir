@@ -112,16 +112,31 @@ std::string mdField(const std::string &s) {
   return out;
 }
 
-/// Extra metrics as "name=avg+/-sd; ..." for the md / csv columns.
-std::string extraMetricsText(const BenchmarkRecord &r) {
-  std::ostringstream os;
-  for (size_t i = 0; i < r.extraMetrics.size(); ++i) {
-    if (i)
-      os << "; ";
-    os << r.extraMetrics[i].name << '=' << textNum(r.extraMetrics[i].avg)
-       << "+/-" << textNum(r.extraMetrics[i].stddev);
-  }
-  return os.str();
+/// Union of metric names across all records, in first-seen order. This is what
+/// makes the table columns adapt to the model: no column is hardcoded.
+std::vector<std::string>
+metricNames(const std::vector<BenchmarkRecord> &records) {
+  std::vector<std::string> names;
+  for (const auto &r : records)
+    for (const auto &m : r.metrics) {
+      bool seen = false;
+      for (const auto &n : names)
+        if (n == m.name) {
+          seen = true;
+          break;
+        }
+      if (!seen)
+        names.push_back(m.name);
+    }
+  return names;
+}
+
+/// The metric named `name` in `r`, or nullptr when absent.
+const Metric *findMetric(const BenchmarkRecord &r, const std::string &name) {
+  for (const auto &m : r.metrics)
+    if (m.name == name)
+      return &m;
+  return nullptr;
 }
 
 /// Compact JSON object with the host / model configuration.
@@ -146,71 +161,65 @@ std::string envJson(const EnvInfo &env) {
   return os.str();
 }
 
-/// Compact JSON object for extra metrics: {"name":{"avg":..,"stddev":..},...}.
-std::string extraMetricsJson(const BenchmarkRecord &r) {
-  std::ostringstream os;
-  os << '{';
-  for (size_t i = 0; i < r.extraMetrics.size(); ++i) {
-    if (i)
-      os << ',';
-    os << '"' << jsonEscape(r.extraMetrics[i].name)
-       << "\":{\"avg\":" << jsonNum(r.extraMetrics[i].avg)
-       << ",\"stddev\":" << jsonNum(r.extraMetrics[i].stddev) << '}';
-  }
-  os << '}';
-  return os.str();
-}
-
 /// Compact JSON object for one measurement row (shared by json/jsonl).
+/// Identity scalars come first; every numeric result is a named metric object
+/// {"avg":..,"stddev":..}.
 std::string recordJson(const BenchmarkRecord &r) {
   std::ostringstream os;
   os << "{\"model\":\"" << jsonEscape(r.model) << "\","
      << "\"test\":\"" << jsonEscape(r.test) << "\","
      << "\"n_prompt\":" << r.nPrompt << ","
      << "\"n_gen\":" << r.nGen << ","
-     << "\"prefill_tps\":" << jsonNum(r.prefillTps) << ","
-     << "\"decode_tps\":" << jsonNum(r.decodeTps) << ","
-     << "\"prefill_tps_sd\":" << jsonNum(r.prefillTpsStddev) << ","
-     << "\"decode_tps_sd\":" << jsonNum(r.decodeTpsStddev) << ","
-     << "\"avg_s\":" << jsonNum(r.avgSecs) << ","
-     << "\"stddev_s\":" << jsonNum(r.stddevSecs) << ","
-     << "\"reps\":" << r.reps << ","
-     << "\"extra_metrics\":" << extraMetricsJson(r) << "}";
+     << "\"reps\":" << r.reps;
+  for (const auto &m : r.metrics)
+    os << ",\"" << jsonEscape(m.name) << "\":{\"avg\":" << jsonNum(m.avg)
+       << ",\"stddev\":" << jsonNum(m.stddev) << '}';
+  os << '}';
   return os.str();
 }
 
 } // namespace
 
 std::string renderMarkdown(const std::vector<BenchmarkRecord> &records) {
+  const std::vector<std::string> names = metricNames(records);
   std::ostringstream os;
-  os << "| model | test | n_prompt | n_gen | prefill_tps | decode_tps | "
-        "prefill_tps_sd | decode_tps_sd | avg_s | stddev_s | reps | "
-        "extra_metrics |\n";
-  os << "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | "
-        "--- |\n";
+  os << "| model | test | n_prompt | n_gen | reps |";
+  for (const auto &n : names)
+    os << " " << mdField(n) << " | " << mdField(n + "_sd") << " |";
+  os << "\n";
+  os << "| --- | --- | --- | --- | --- |";
+  for (size_t i = 0; i < names.size(); ++i)
+    os << " --- | --- |";
+  os << "\n";
   for (const auto &r : records) {
     os << "| " << mdField(r.model) << " | " << mdField(r.test) << " | "
-       << r.nPrompt << " | " << r.nGen << " | " << textNum(r.prefillTps)
-       << " | " << textNum(r.decodeTps) << " | " << textNum(r.prefillTpsStddev)
-       << " | " << textNum(r.decodeTpsStddev) << " | " << textNum(r.avgSecs)
-       << " | " << textNum(r.stddevSecs) << " | " << r.reps << " | "
-       << mdField(extraMetricsText(r)) << " |\n";
+       << r.nPrompt << " | " << r.nGen << " | " << r.reps << " |";
+    for (const auto &n : names) {
+      const Metric *m = findMetric(r, n);
+      os << " " << (m ? textNum(m->avg) : std::string()) << " | "
+         << (m ? textNum(m->stddev) : std::string()) << " |";
+    }
+    os << "\n";
   }
   return os.str();
 }
 
 std::string renderCsv(const std::vector<BenchmarkRecord> &records) {
+  const std::vector<std::string> names = metricNames(records);
   std::ostringstream os;
-  os << "model,test,n_prompt,n_gen,prefill_tps,decode_tps,prefill_tps_sd,"
-        "decode_tps_sd,avg_s,stddev_s,reps,extra_metrics"
-        "\n";
+  os << "model,test,n_prompt,n_gen,reps";
+  for (const auto &n : names)
+    os << ',' << csvField(n) << ',' << csvField(n + "_sd");
+  os << '\n';
   for (const auto &r : records) {
     os << csvField(r.model) << ',' << csvField(r.test) << ',' << r.nPrompt
-       << ',' << r.nGen << ',' << textNum(r.prefillTps) << ','
-       << textNum(r.decodeTps) << ',' << textNum(r.prefillTpsStddev) << ','
-       << textNum(r.decodeTpsStddev) << ',' << textNum(r.avgSecs) << ','
-       << textNum(r.stddevSecs) << ',' << r.reps << ','
-       << csvField(extraMetricsText(r)) << '\n';
+       << ',' << r.nGen << ',' << r.reps;
+    for (const auto &n : names) {
+      const Metric *m = findMetric(r, n);
+      os << ',' << (m ? textNum(m->avg) : std::string()) << ','
+         << (m ? textNum(m->stddev) : std::string());
+    }
+    os << '\n';
   }
   return os.str();
 }

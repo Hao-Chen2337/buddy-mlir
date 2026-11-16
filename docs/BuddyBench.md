@@ -48,13 +48,22 @@ buddy-bench --model m.rax -p 0 -n 0 -pg 128,32 -pg 512,128
 
 ## Output formats
 
-`-o md` (default), `-o csv`, `-o json` and `-o jsonl`. `json` emits
-`{"env": {...}, "results": [...]}`; `jsonl` emits one leading env line followed
-by one self-contained JSON object per measurement. Every run also prints the
-recorded runtime configuration to stderr: CPU model, available and used cores,
-affinity, NUMA, ISA, precision, backend, device, batch size, buddy-mlir version
-and the `.rax` path, size and mtime, so a result can be reproduced and traced
-back to the package it came from.
+`-o md` (default), `-o csv`, `-o json` and `-o jsonl`. Identity scalars
+(`model`, `test`, `n_prompt`, `n_gen`, `reps`) stay flat; every numeric result
+is a named metric, so the report adapts to the model instead of hardcoding
+columns. In `json`/`jsonl` each metric is an object
+`"<name>": {"avg": .., "stddev": ..}` after the identity scalars; in `md`/`csv`
+each metric becomes a `<name>` column followed by a `<name>_sd` column. The
+decoder metrics are `prefill_tps`, `decode_tps` and `avg_s`; a model's
+`runBench` can add further metrics by name (e.g. `images_per_sec`) and they
+appear alongside them as first-class columns.
+
+`json` emits `{"env": {...}, "results": [...]}`; `jsonl` emits one leading env
+line followed by one self-contained JSON object per measurement. Every run also
+prints the recorded runtime configuration to stderr: CPU model, available and
+used cores, affinity, NUMA, ISA, precision, backend, device, batch size,
+buddy-mlir version and the `.rax` path, size and mtime, so a result can be
+reproduced and traced back to the package it came from.
 
 ## Affinity and NUMA
 
