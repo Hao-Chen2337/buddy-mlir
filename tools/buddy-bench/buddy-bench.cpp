@@ -30,6 +30,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <CLI11.hpp>
@@ -179,8 +180,12 @@ int run(int argc, char **argv) {
                env.numaConfig.c_str(), env.isa.c_str(), env.version.c_str(),
                env.batchSize);
 
-  // ── Benchmark loop: one row per configuration ────────────────────────
-  std::vector<BenchmarkRecord> records;
+  // ── Stage 1: run every configuration, collecting raw samples ──────────
+  // This stage is pure control flow: load → warmup → run → collect. It does
+  // not derive, aggregate or format any result; that is deferred to Stage 2 so
+  // the run loop and the result processing stay separate.
+  std::vector<std::vector<buddy::runtime::BenchmarkResult>> allSamples;
+  allSamples.reserve(configs.size());
   for (const auto &cfgSpec : configs) {
     std::fprintf(stderr, "buddy-bench: running promptLen=%d nGen=%d\n",
                  cfgSpec.promptLen, cfgSpec.nGen);
@@ -210,8 +215,15 @@ int run(int argc, char **argv) {
       return 1;
     }
 
-    records.push_back(summarize(backend.modelName(), samples, forwardMode));
+    allSamples.push_back(std::move(samples));
   }
+
+  // ── Stage 2: derive and aggregate one report row per configuration ────
+  std::vector<BenchmarkRecord> records;
+  records.reserve(allSamples.size());
+  for (size_t i = 0; i < allSamples.size(); ++i)
+    records.push_back(
+        summarize(backend.modelName(), allSamples[i], forwardMode));
 
   // ── Output ────────────────────────────────────────────────────────────
   if (outputFormat == "csv")
