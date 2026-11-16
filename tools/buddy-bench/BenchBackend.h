@@ -32,24 +32,50 @@
 namespace buddy {
 namespace bench {
 
-/// Host environment info recorded alongside results for reproducibility.
+/// One named environment attribute, pre-serialized by getEnvInfo(). Strings
+/// carry `str`, integers carry `num`, so the renderer and the stderr summary
+/// read from one place instead of hardcoding a flat field list.
+struct EnvField {
+  std::string name;
+  bool isString = true;
+  std::string str;
+  long long num = 0;
+
+  static EnvField s(std::string name, std::string value) {
+    EnvField f;
+    f.name = name;
+    f.str = value;
+    f.isString = true;
+    return f;
+  }
+  static EnvField i(std::string name, long long value) {
+    EnvField f;
+    f.name = name;
+    f.num = value;
+    f.isString = false;
+    return f;
+  }
+};
+
+/// Host / package environment recorded alongside results, split into two tables
+/// so the report adapts to the model category instead of hardcoding a flat
+/// field list:
+///  - `shared`: host + build attributes, identical for every model.
+///  - `category`: package + backend attributes, per model category.
 struct EnvInfo {
-  std::string cpuModel;    // e.g. "12th Gen Intel(R) Core(TM) i7-12700"
-  int numCores = 0;        // available logical cores
-  int usedCores = 0;       // logical cores in the effective affinity mask
-  std::string cpuAffinity; // effective affinity, e.g. "0-31" ("" = unknown)
-  std::string numaConfig;  // e.g. "1 node" / "4 nodes" / "n/a"
-  std::string isa;       // CPU ISA / feature flags (RISC-V "isa" / x86 "flags")
-  std::string version;   // BUDDY_VERSION
-  std::string modelPath; // source .rax
-  long long modelSizeBytes = 0; // .rax size in bytes
-  std::string modelMtime;       // .rax mtime, UTC ISO 8601
-  std::string precision;        // e.g. f16 / f32 / w8a16
-  std::string backend;          // e.g. cpu / rvv / ttnn
-  std::string device;           // e.g. cpu
-  std::string deviceArch;       // cpu model, or accelerator architecture
-  int deviceCount = 1;
-  int batchSize = 1;
+  std::vector<EnvField> shared;
+  std::vector<EnvField> category;
+
+  /// First field named `name` across both tables, or nullptr.
+  const EnvField *find(const std::string &name) const {
+    for (const auto &f : shared)
+      if (f.name == name)
+        return &f;
+    for (const auto &f : category)
+      if (f.name == name)
+        return &f;
+    return nullptr;
+  }
 };
 
 /// Unified facade over the buddy runtime. buddy-bench.cpp talks only to this.

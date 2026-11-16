@@ -203,54 +203,61 @@ bool BenchBackend::runBench(const buddy::runtime::RunConfig &cfg,
 EnvInfo BenchBackend::getEnvInfo() const {
   EnvInfo env;
 
-  // Online logical core count.
-  env.numCores = static_cast<int>(std::thread::hardware_concurrency());
+  // ── Shared table: host + build attributes, identical for every model ──
+  const int numCores = static_cast<int>(std::thread::hardware_concurrency());
 
   // Effective CPU affinity and the number of cores it leaves available.
-  env.cpuAffinity = effectiveCpuAffinity();
-  env.usedCores = effectiveCpuCount();
-  if (env.usedCores == 0)
-    env.usedCores = env.numCores; // affinity read failed; assume unrestricted
-
-  env.numaConfig = numaConfig();
-  env.isa = cpuIsa();
-
-#ifdef BUDDY_VERSION
-  env.version = BUDDY_VERSION;
-#else
-  env.version = "unknown";
-#endif
-  env.modelPath = raxPath_;
-  env.modelSizeBytes = raxSizeBytes_;
-  env.modelMtime = raxMtime_;
-  env.precision = precision_;
-  env.backend = backend_;
-  env.device = device_;
-  env.deviceArch = backend_; // refined below for cpu
-  env.deviceCount = 1;
-  env.batchSize = batchSize_;
+  const std::string affinity = effectiveCpuAffinity();
+  int usedCores = effectiveCpuCount();
+  if (usedCores == 0)
+    usedCores = numCores; // affinity read failed; assume unrestricted
 
   // CPU model: first "model name" line of /proc/cpuinfo (Linux).
-  std::ifstream cpuinfo("/proc/cpuinfo");
-  std::string line;
-  while (std::getline(cpuinfo, line)) {
-    const std::string key = "model name";
-    if (line.compare(0, key.size(), key) != 0)
-      continue;
-    auto colon = line.find(':');
-    if (colon == std::string::npos)
+  std::string cpuModel;
+  {
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    std::string line;
+    while (std::getline(cpuinfo, line)) {
+      const std::string key = "model name";
+      if (line.compare(0, key.size(), key) != 0)
+        continue;
+      auto colon = line.find(':');
+      if (colon == std::string::npos)
+        break;
+      std::string val = line.substr(colon + 1);
+      auto begin = val.find_first_not_of(" \t");
+      auto end = val.find_last_not_of(" \t");
+      if (begin != std::string::npos)
+        cpuModel = val.substr(begin, end - begin + 1);
       break;
-    std::string val = line.substr(colon + 1);
-    auto begin = val.find_first_not_of(" \t");
-    auto end = val.find_last_not_of(" \t");
-    if (begin != std::string::npos)
-      env.cpuModel = val.substr(begin, end - begin + 1);
-    break;
+    }
   }
 
+  env.shared.push_back(EnvField::s("cpu_model", cpuModel));
+  env.shared.push_back(EnvField::i("cores", numCores));
+  env.shared.push_back(EnvField::i("used_cores", usedCores));
+  env.shared.push_back(EnvField::s("cpu_affinity", affinity));
+  env.shared.push_back(EnvField::s("numa", numaConfig()));
+  env.shared.push_back(EnvField::s("isa", cpuIsa()));
+#ifdef BUDDY_VERSION
+  env.shared.push_back(EnvField::s("version", BUDDY_VERSION));
+#else
+  env.shared.push_back(EnvField::s("version", "unknown"));
+#endif
+
+  // ── Category table: package + backend attributes ──
+  env.category.push_back(EnvField::s("model_path", raxPath_));
+  env.category.push_back(EnvField::i("model_size", raxSizeBytes_));
+  env.category.push_back(EnvField::s("model_mtime", raxMtime_));
+  env.category.push_back(EnvField::s("precision", precision_));
+  env.category.push_back(EnvField::s("backend", backend_));
+  env.category.push_back(EnvField::s("device", device_));
   // A cpu-backend model runs on the host CPU; report its architecture.
-  if (env.backend == "cpu" && !env.cpuModel.empty())
-    env.deviceArch = env.cpuModel;
+  env.category.push_back(EnvField::s(
+      "device_arch",
+      (backend_ == "cpu" && !cpuModel.empty()) ? cpuModel : backend_));
+  env.category.push_back(EnvField::i("device_count", 1));
+  env.category.push_back(EnvField::i("batch_size", batchSize_));
 
   return env;
 }

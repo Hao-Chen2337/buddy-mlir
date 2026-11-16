@@ -170,15 +170,25 @@ int run(int argc, char **argv) {
   }
 
   EnvInfo env = backend.getEnvInfo();
+  // The stderr summary uses short names; look them up by the report field keys.
+  auto envStr = [&env](const std::string &name) {
+    const EnvField *f = env.find(name);
+    return f ? f->str : std::string();
+  };
+  auto envInt = [&env](const std::string &name) -> long long {
+    const EnvField *f = env.find(name);
+    return f ? f->num : 0;
+  };
   std::fprintf(stderr,
                "buddy-bench: model=%s precision=%s backend=%s device=%s "
-               "cpu=%s cores=%d used_cores=%d affinity=%s numa=%s isa=%s "
-               "version=%s batch=%d\n",
-               backend.modelName().c_str(), env.precision.c_str(),
-               env.backend.c_str(), env.device.c_str(), env.cpuModel.c_str(),
-               env.numCores, env.usedCores, env.cpuAffinity.c_str(),
-               env.numaConfig.c_str(), env.isa.c_str(), env.version.c_str(),
-               env.batchSize);
+               "cpu=%s cores=%lld used_cores=%lld affinity=%s numa=%s isa=%s "
+               "version=%s batch=%lld\n",
+               backend.modelName().c_str(), envStr("precision").c_str(),
+               envStr("backend").c_str(), envStr("device").c_str(),
+               envStr("cpu_model").c_str(), envInt("cores"),
+               envInt("used_cores"), envStr("cpu_affinity").c_str(),
+               envStr("numa").c_str(), envStr("isa").c_str(),
+               envStr("version").c_str(), envInt("batch_size"));
 
   // ── Stage 1: run every configuration, collecting raw samples ──────────
   // This stage is pure control flow: load → warmup → run → collect. It does

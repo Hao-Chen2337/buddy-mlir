@@ -139,25 +139,27 @@ const Metric *findMetric(const BenchmarkRecord &r, const std::string &name) {
   return nullptr;
 }
 
-/// Compact JSON object with the host / model configuration.
+/// Compact JSON object with the host / model configuration. Fields come from
+/// the shared and per-category tables in order.
 std::string envJson(const EnvInfo &env) {
   std::ostringstream os;
-  os << "{\"cpu_model\":\"" << jsonEscape(env.cpuModel) << "\","
-     << "\"cores\":" << env.numCores << ","
-     << "\"used_cores\":" << env.usedCores << ","
-     << "\"cpu_affinity\":\"" << jsonEscape(env.cpuAffinity) << "\","
-     << "\"numa\":\"" << jsonEscape(env.numaConfig) << "\","
-     << "\"isa\":\"" << jsonEscape(env.isa) << "\","
-     << "\"version\":\"" << jsonEscape(env.version) << "\","
-     << "\"model_path\":\"" << jsonEscape(env.modelPath) << "\","
-     << "\"model_size\":" << env.modelSizeBytes << ","
-     << "\"model_mtime\":\"" << jsonEscape(env.modelMtime) << "\","
-     << "\"precision\":\"" << jsonEscape(env.precision) << "\","
-     << "\"backend\":\"" << jsonEscape(env.backend) << "\","
-     << "\"device\":\"" << jsonEscape(env.device) << "\","
-     << "\"device_arch\":\"" << jsonEscape(env.deviceArch) << "\","
-     << "\"device_count\":" << env.deviceCount << ","
-     << "\"batch_size\":" << env.batchSize << "}";
+  os << '{';
+  bool first = true;
+  auto emit = [&](const EnvField &f) {
+    if (!first)
+      os << ',';
+    first = false;
+    os << '"' << jsonEscape(f.name) << "\":";
+    if (f.isString)
+      os << '"' << jsonEscape(f.str) << '"';
+    else
+      os << f.num;
+  };
+  for (const auto &f : env.shared)
+    emit(f);
+  for (const auto &f : env.category)
+    emit(f);
+  os << '}';
   return os.str();
 }
 

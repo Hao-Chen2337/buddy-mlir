@@ -37,6 +37,7 @@ using buddy::bench::avg;
 using buddy::bench::BenchConfig;
 using buddy::bench::BenchmarkRecord;
 using buddy::bench::buildConfigs;
+using buddy::bench::EnvField;
 using buddy::bench::EnvInfo;
 using buddy::bench::expandIntList;
 using buddy::bench::Metric;
@@ -267,15 +268,14 @@ bool testSummarize() {
 
 bool testReporter() {
   EnvInfo env;
-  env.cpuModel = "cpu \"name\"\nline"; // quote + newline must be escaped
-  env.usedCores = 8;
-  env.version = "0.0.0";
-  env.modelPath = "/tmp/m.rax";
-  env.modelSizeBytes = 42;
-  env.modelMtime = "2026-01-02T03:04:05Z";
-  env.precision = "f32";
-  env.backend = "cpu";
-  env.device = "cpu";
+  env.shared = {EnvField::s("cpu_model", "cpu \"name\"\nline"),
+                EnvField::i("used_cores", 8), EnvField::s("version", "0.0.0")};
+  env.category = {EnvField::s("model_path", "/tmp/m.rax"),
+                  EnvField::i("model_size", 42),
+                  EnvField::s("model_mtime", "2026-01-02T03:04:05Z"),
+                  EnvField::s("precision", "f32"),
+                  EnvField::s("backend", "cpu"),
+                  EnvField::s("device", "cpu")};
 
   BenchmarkRecord r;
   r.model = "m|delim,\"q\""; // pipe breaks md, comma+quote break csv
