@@ -193,6 +193,8 @@ def main() -> int:
     model_family = spec_data.get("model_family")
     if model_family not in {
         "deepseek_r1",
+        "qwen25",
+        "llama",
         "whisper",
         "qwen3_vl",
         "qwen3_vl_moe",
@@ -201,8 +203,8 @@ def main() -> int:
     }:
         print(
             "error: unsupported model_family in spec: "
-            f"{model_family!r} (supported: deepseek_r1, whisper, qwen3_vl, "
-            "qwen3_vl_moe, bge_m3, proteinglm)",
+            f"{model_family!r} (supported: deepseek_r1, qwen25, llama, whisper, "
+            "qwen3_vl, qwen3_vl_moe, bge_m3, proteinglm)",
             file=sys.stderr,
         )
         return 1
@@ -314,6 +316,40 @@ def main() -> int:
             auto_cfg = local_model / "config.json"
             if auto_cfg.is_file():
                 cmake_args.append(f"-DBUDDY_DSR1_HF_CONFIG={auto_cfg}")
+    elif model_family == "qwen25":
+        cmake_args.extend(
+            [
+                f"-DBUDDY_QWEN25_SPEC={spec}",
+                "-DBUDDY_BUILD_QWEN25_MODEL=ON",
+            ]
+        )
+        if local_model is not None:
+            cmake_args.append(f"-DBUDDY_QWEN25_LOCAL_MODEL={local_model}")
+
+        if args.hf_config is not None:
+            hf = resolve_from_cwd(args.hf_config)
+            cmake_args.append(f"-DBUDDY_QWEN25_HF_CONFIG={hf}")
+        elif local_model is not None:
+            auto_cfg = local_model / "config.json"
+            if auto_cfg.is_file():
+                cmake_args.append(f"-DBUDDY_QWEN25_HF_CONFIG={auto_cfg}")
+    elif model_family == "llama":
+        cmake_args.extend(
+            [
+                f"-DBUDDY_LLAMA_SPEC={spec}",
+                "-DBUDDY_BUILD_LLAMA_MODEL=ON",
+            ]
+        )
+        if local_model is not None:
+            cmake_args.append(f"-DBUDDY_LLAMA_LOCAL_MODEL={local_model}")
+
+        if args.hf_config is not None:
+            hf = resolve_from_cwd(args.hf_config)
+            cmake_args.append(f"-DBUDDY_LLAMA_HF_CONFIG={hf}")
+        elif local_model is not None:
+            auto_cfg = local_model / "config.json"
+            if auto_cfg.is_file():
+                cmake_args.append(f"-DBUDDY_LLAMA_HF_CONFIG={auto_cfg}")
     elif model_family == "whisper":
         cmake_args.extend(
             [

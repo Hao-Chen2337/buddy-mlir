@@ -138,6 +138,12 @@ set(BUDDY_ENABLE_OPENCV OFF CACHE BOOL "Enable OpenCV support.")
 option(BUDDY_BUILD_DEEPSEEK_R1_MODEL
   "Build models/deepseek_r1 (buddy_models_deepseek_r1, .so, .rax)"
   OFF)
+option(BUDDY_BUILD_QWEN25_MODEL
+  "Build models/qwen25 (Qwen2.5 buddy-codegen .so/.rax + runner)"
+  OFF)
+option(BUDDY_BUILD_LLAMA_MODEL
+  "Build models/llama (Llama buddy-codegen .so/.rax + runner)"
+  OFF)
 option(BUDDY_BUILD_LLAMA31_TT_MODEL
   "Build models/llama31_tt and link the Tenstorrent Llama 3.1 runner into buddy-cli"
   OFF)

@@ -94,6 +94,16 @@ public:
   // This function is designed for tokenizing input text for Gemma4 models.
   // Uses SentencePiece-style BPE with '▁' as the space replacement character.
   void tokenizeGemma4(const std::string &vocab, size_t length);
+  // Mistral Tokenizer
+  // Mistral-7B uses the same SentencePiece BPE layout as Llama (<unk>=0,
+  // <s>=1, </s>=2, '▁' as the space marker), so this reuses tokenizeLlama().
+  void tokenizeMistral(const std::string &vocab, size_t length);
+  // Phi Tokenizer
+  // Phi-3 uses a Llama-style SentencePiece BPE vocabulary (tokenizer.json)
+  // with added chat tokens. Tokenized with the same DP longest-match search
+  // as tokenizeLlama(), but with Phi's special tokens: <unk>=0 (pad),
+  // <s>=1 (bos), <|endoftext|>=32000 (eos).
+  void tokenizePhi(const std::string &vocab, size_t length);
 
   // Revert the ids into tokens.
   // This function initializes the conversion from Text memref to a string.
@@ -104,6 +114,8 @@ public:
   std::string revertDeepSeekR1();
   std::string revertQwen3();
   std::string revertGemma4();
+  std::string revertMistral();
+  std::string revertPhi();
 
   // Get sequence length
   size_t getTokenCnt() { return this->tokenCnt; }
@@ -252,6 +264,79 @@ void Text<T, N>::tokenizeLlama(const std::string &vocab, size_t length) {
   // Forward pass
   // Use dynamic programming as the main algorithm to adapt the longest
   // charactors.
+  for (int i = 0; i < len; i++) {
+    for (int sub_len = 1; sub_len <= len - i; sub_len++) {
+      auto iter_start = str.begin() + i;
+      auto iter_end = iter_start + sub_len;
+      auto token = tokenToIdMap.find(std::string(iter_start, iter_end));
+      if (token != tokenToIdMap.end()) {
+        int token_score = sub_len * sub_len;
+        int local_score = score[i] + token_score;
+        int next = i + sub_len;
+        if (score[next] < local_score) {
+          score[next] = local_score;
+          prev[next] = token->second;
+        }
+      }
+    }
+  }
+  // Backward pass
+  int i = len;
+  while (i > 0) {
+    size_t token_id = prev[i];
+    res.push_back(token_id);
+    i -= idToTokenVec[token_id].length();
+  }
+
+  this->aligned[0] = cls;
+  tokenCnt = 1;
+  // Directly fill this->aligned in reverse order.
+  for (auto it = res.rbegin(); it != res.rend(); ++it) {
+    this->aligned[tokenCnt++] = *it;
+  }
+
+  for (size_t i = tokenCnt; i < length; i++) {
+    this->aligned[i] = pad;
+  }
+}
+
+// Mistral Tokenizer
+template <typename T, size_t N>
+void Text<T, N>::tokenizeMistral(const std::string &vocab, size_t length) {
+  // Mistral-7B shares Llama's SentencePiece layout: <unk>=0, <s>=1 (bos),
+  // </s>=2 (eos/pad), '▁' as the space marker. tokenizeLlama() uses exactly
+  // these special-token ids and the same DP longest-match BPE.
+  tokenizeLlama(vocab, length);
+}
+
+// Phi Tokenizer
+template <typename T, size_t N>
+void Text<T, N>::tokenizePhi(const std::string &vocab, size_t length) {
+  // Initialize MemRef container members.
+  this->offset = 0;
+  this->sizes[0] = 1;
+  this->sizes[1] = length;
+  this->setStrides();
+  size_t size = this->product(this->sizes);
+  this->allocated = (T *)malloc(sizeof(T) * size);
+  this->aligned = this->allocated;
+  // Phi-3 special tokens: <unk>=0 (pad), <s>=1 (bos), <|endoftext|>=32000.
+  this->unk = 0;
+  this->cls = 1;
+  this->sep = 32000;
+  this->pad = 0;
+  // Load Vocab
+  loadVocab(vocab);
+  str = replaceAllSpace(str);
+
+  int len = str.length();
+  std::vector<size_t> res;
+  std::vector<float> score(len + 1, 0);
+  std::vector<size_t> prev(len + 1, 0);
+  // Reserve space for the results.
+  res.reserve(len);
+
+  // Forward pass: same DP longest-match search as tokenizeLlama().
   for (int i = 0; i < len; i++) {
     for (int sub_len = 1; sub_len <= len - i; sub_len++) {
       auto iter_start = str.begin() + i;
@@ -799,6 +884,42 @@ template <typename T, size_t N> std::string Text<T, N>::revertLlama() {
     dst.append(token);
   }
   if (dst[0] == ' ') {
+    dst.erase(0, 1);
+  }
+  return dst;
+}
+
+template <typename T, size_t N> std::string Text<T, N>::revertMistral() {
+  // Mistral-7B shares Llama's SentencePiece layout: <unk>=0, <s>=1, </s>=2,
+  // '▁' as the space marker, so the detokenization is identical.
+  return revertLlama();
+}
+
+template <typename T, size_t N> std::string Text<T, N>::revertPhi() {
+  std::string dst;
+
+  // Phi-3 special tokens: <unk>=0 (pad), <s>=1 (bos),
+  // <|endoftext|>=32000 (eos).
+  const int PAD_ID = 0;
+  const int BOS_ID = 1;
+  const int EOS_ID = 32000;
+
+  for (size_t i = 0; i < this->tokenCnt; i++) {
+    int id = this->aligned[i];
+    if (id == PAD_ID || id == BOS_ID)
+      continue;
+    if (id == EOS_ID)
+      break;
+    // Replace each "▁" with a space.
+    std::string token = this->idToTokenVec[id];
+    size_t pos = token.find("▁");
+    while (pos != std::string::npos) {
+      token.replace(pos, 3, " ");
+      pos = token.find("▁", pos + 1);
+    }
+    dst.append(token);
+  }
+  if (!dst.empty() && dst[0] == ' ') {
     dst.erase(0, 1);
   }
   return dst;

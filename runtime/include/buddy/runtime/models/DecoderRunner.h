@@ -1,4 +1,4 @@
-//===- DeepSeekR1Runner.h - DeepSeekR1 inference runner -------------------===//
+//===- DecoderRunner.h - generic decoder-only inference runner ------------===//
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef BUDDY_RUNTIME_MODELS_DEEPSEEKR1RUNNER_H
-#define BUDDY_RUNTIME_MODELS_DEEPSEEKR1RUNNER_H
+#ifndef BUDDY_RUNTIME_MODELS_DECODERRUNNER_H
+#define BUDDY_RUNTIME_MODELS_DECODERRUNNER_H
 
 #include "buddy/runtime/core/InferenceRunner.h"
 
@@ -28,14 +28,18 @@ namespace runtime {
 
 class ModelSession;
 
-/// Full inference runner for DeepSeekR1.
+/// Full inference runner for decoder-only models (Qwen2.5, DeepSeek R1, ...).
+///
+/// The compile-time shape and token constants come from the generated
+/// ModelSession.h (BUDDY_DECODER_*), so this same source is compiled once per
+/// model family against that family's generated header.
 ///
 /// Implements the complete loop: load weights → tokenize → prefill → decode.
 /// Handles both Mode A (.rax manifest) and Mode B (explicit paths).
-class DeepSeekR1Runner : public InferenceRunner {
+class DecoderRunner : public InferenceRunner {
 public:
-  DeepSeekR1Runner();
-  ~DeepSeekR1Runner() override;
+  DecoderRunner();
+  ~DecoderRunner() override;
   void run(const RunConfig &cfg) override;
   bool runBench(const RunConfig &cfg, int warmupReps, int reps,
                 std::vector<BenchmarkResult> &out) override;
@@ -52,4 +56,4 @@ private:
 } // namespace runtime
 } // namespace buddy
 
-#endif // BUDDY_RUNTIME_MODELS_DEEPSEEKR1RUNNER_H
+#endif // BUDDY_RUNTIME_MODELS_DECODERRUNNER_H

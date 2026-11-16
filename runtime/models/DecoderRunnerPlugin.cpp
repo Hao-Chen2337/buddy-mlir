@@ -1,4 +1,4 @@
-//===- DeepSeekR1RunnerPlugin.cpp - DeepSeek R1 runner plugin -------------===//
+//===- DecoderRunnerPlugin.cpp - generic decoder runner plugin ------------===//
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,10 +14,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "buddy/runtime/models/DeepSeekR1Runner.h"
+#include "buddy/runtime/models/DecoderRunner.h"
 
 extern "C" buddy::runtime::InferenceRunner *buddy_create_inference_runner_v1() {
-  return new buddy::runtime::DeepSeekR1Runner();
+  return new buddy::runtime::DecoderRunner();
 }
 
 extern "C" void

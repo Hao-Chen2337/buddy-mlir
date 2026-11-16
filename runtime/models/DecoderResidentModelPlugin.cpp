@@ -1,4 +1,4 @@
-//===- DeepSeekR1ResidentModelPlugin.cpp - DeepSeek R1 serving plugin -----===//
+//===- DecoderResidentModelPlugin.cpp - generic decoder serving plugin ----===//
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,12 +15,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "buddy/runtime/core/ServerModelPluginAdapters.h"
-#include "buddy/runtime/models/DeepSeekR1ResidentModel.h"
+#include "buddy/runtime/models/DecoderResidentModel.h"
+#include "buddy/runtime/models/ModelSession.h"
 
 namespace {
 struct Factory {
   static std::unique_ptr<buddy::runtime::ResidentModel> create() {
-    return std::make_unique<buddy::runtime::DeepSeekR1ResidentModel>();
+    return std::make_unique<buddy::runtime::DecoderResidentModel>();
   }
 };
 using Adapter = buddy::runtime::server_abi::ResidentServerModelAdapter<Factory>;
@@ -39,7 +40,7 @@ buddy_server_model_descriptor_v1() {
       BUDDY_SERVER_MODALITY_TEXT,
       BUDDY_SERVER_RESULT_TEXT,
       1,
-      "deepseek_r1",
+      BUDDY_DECODER_MODEL_NAME,
       Adapter::ops(),
       0};
   return &descriptor;

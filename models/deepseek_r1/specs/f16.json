@@ -4,6 +4,8 @@
   "variant": "f16",
   "max_token_len": 1024,
   "num_threads": 48,
+  "pad_token_id": 198,
+  "extra_stop_token_ids": [151647],
   "weights_override": {
     "total": 1777088064,
     "linear_elements": 0,

@@ -30,6 +30,12 @@ import json
 import os
 import sys
 
+# decoder_models.py lives next to this script and is the single source of truth
+# for decoder-only families; put this directory first so the import works no
+# matter what CWD CMake invokes us from.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from decoder_models import DECODER_MODELS  # noqa: E402
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Static knowledge tables — one entry per supported variant
 # ──────────────────────────────────────────────────────────────────────────────
@@ -204,6 +210,20 @@ def _count_params_torch(model_path: str) -> dict:
             linear_output_channels += p.shape[0]
         else:
             other_elements += p.numel()
+
+    # The Dynamo importer captures the rotary embedding's inv_freq buffer (the
+    # frequency table that apply_rotary_pos_emb reads) as a graph parameter and
+    # writes it into the exported weight file. It must therefore be counted, or
+    # the generated config under-counts the weights by the buffer size and the
+    # runtime silently truncates the tail of the last tensor. HF also keeps an
+    # original_inv_freq buffer for NTK/YaRN rescaling, but it is never read in
+    # the forward pass, so Dynamo does not capture it and it must not be
+    # counted. Only `total` is adjusted here: f32/f16/bf16 variants size their
+    # weight file from `total`, while quantized variants use the linear/other
+    # buckets whose importer grouping is a separate concern.
+    for name, buf in model.named_buffers():
+        if "inv_freq" in name and "original_inv_freq" not in name:
+            total += buf.numel()
 
     del model
     return {
@@ -654,12 +674,67 @@ def derive_decode_pack(hf: dict, spec: dict) -> dict:
     }
 
 
+# Human-readable name for the CLI banner, keyed by model family. This is a
+# display concern only; a spec may override it with ``display_name``.
+_DISPLAY_NAME = {f: e["display"] for f, e in DECODER_MODELS.items()}
+
+# Tokenizer dispatch tag carried by tokens["tokenizer"]. It names the
+# TextContainer method family the generic DecoderRunner must call, not the
+# model family: qwen25 and qwen3 share the Qwen3 byte-level BPE codec. The
+# runner compares BUDDY_DECODER_TOKENIZER against these tags.
+_TOKENIZER_METHOD = {f: e["tokenizer"] for f, e in DECODER_MODELS.items()}
+
+# Family-level token defaults that the HuggingFace config.json does not carry
+# but the per-model Runners used to hardcode. Applying them here keeps every
+# spec correct -- including the f32 default, which omits these fields -- without
+# editing each spec file. A spec may still override either key explicitly.
+# Built from decoder_models.DECODER_MODELS (the single source of truth): a
+# family's ``eos``/``pad`` pin the value even when HF disagrees; ``None``
+# falls back to the HF ``config.json``.
+_TOKEN_DEFAULTS = {
+    family: {
+        k: v
+        for k, v in (
+            ("eos_token_id", entry.get("eos")),
+            ("pad_token_id", entry.get("pad")),
+            ("extra_stop_token_ids", entry.get("extra_stop") or []),
+        )
+        if v is not None and (k != "extra_stop_token_ids" or v)
+    }
+    for family, entry in DECODER_MODELS.items()
+}
+
+
 def derive_tokens(hf: dict, spec: dict) -> dict:
+    model_family = spec.get("model_family", "unknown")
+    defaults = _TOKEN_DEFAULTS.get(model_family, {})
+
+    eos_id = spec.get(
+        "eos_token_id", defaults.get("eos_token_id", hf.get("eos_token_id", 0))
+    )
+    pad_token_id = spec.get(
+        "pad_token_id", defaults.get("pad_token_id", hf.get("pad_token_id", 0))
+    )
+    extra_stop = spec.get(
+        "extra_stop_token_ids", defaults.get("extra_stop_token_ids", [])
+    )
+    stop_token_ids = [eos_id] + [int(t) for t in extra_stop if int(t) != eos_id]
+
+    tokenizer = spec.get(
+        "tokenizer", _TOKENIZER_METHOD.get(model_family, model_family)
+    )
+
     return {
-        "eos_id": hf.get("eos_token_id", 0),
+        "eos_id": eos_id,
+        "pad_token_id": pad_token_id,
+        "stop_token_ids": stop_token_ids,
         "rope_theta": hf.get("rope_theta", 10000.0),
-        "tokenizer": spec.get("model_family", "unknown"),
+        "tokenizer": tokenizer,
         "vocab_file": spec.get("vocab_file", "vocab.txt"),
+        "display_name": spec.get(
+            "display_name", _DISPLAY_NAME.get(model_family, model_family)
+        ),
+        "macro_prefix": spec.get("macro_prefix"),
     }
 
 

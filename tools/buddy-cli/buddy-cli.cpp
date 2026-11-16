@@ -30,7 +30,7 @@
 #include "buddy/runtime/core/ModelManifest.h"
 #include "buddy/runtime/core/RaxDependenciesHandle.h"
 #ifdef BUDDY_CLI_HAVE_DEEPSEEK_R1_MODEL
-#include "buddy/runtime/models/DeepSeekR1Runner.h"
+#include "buddy/runtime/models/DecoderRunner.h"
 #endif
 #ifdef BUDDY_CLI_HAVE_LLAMA31_TT_MODEL
 #include "buddy/runtime/models/Llama31TTRunner.h"
@@ -160,7 +160,7 @@ static std::unique_ptr<buddy::runtime::InferenceRunner>
 makeBuiltinRunner(const std::string &modelName) {
 #ifdef BUDDY_CLI_HAVE_DEEPSEEK_R1_MODEL
   if (modelName.rfind("deepseek_r1", 0) == 0)
-    return std::make_unique<buddy::runtime::DeepSeekR1Runner>();
+    return std::make_unique<buddy::runtime::DecoderRunner>();
 #endif
 #ifdef BUDDY_CLI_HAVE_LLAMA31_TT_MODEL
   if (modelName.rfind("llama31_tt", 0) == 0 ||

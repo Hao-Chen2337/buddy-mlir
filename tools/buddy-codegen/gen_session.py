@@ -35,6 +35,12 @@ import os
 import sys
 from io import StringIO
 
+# decoder_models.py lives next to this script and is the single source of truth
+# for decoder-only families; put this directory first so the import works no
+# matter what CWD CMake invokes us from.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from decoder_models import DECODER_MODELS  # noqa: E402
+
 # Prologues for generated C++ (LLVM-style file banner + Apache + scope notes).
 _H_FILE_PROLOGUE = """\
 //===- ModelSession.h - Runtime session for DeepSeek R1 (generated) ----------===//
@@ -98,10 +104,30 @@ _CPP_FILE_PROLOGUE = """\
 """
 
 
+# Model families that share the generic DecoderRunner/DecoderResidentModel.
+# Their generated ModelSession.h uses the one ``BUDDY_DECODER_*`` macro prefix
+# so the shared sources compile unchanged per family. Families outside this set
+# (e.g. llama31_tt, qwen3_vl) keep their own prefix. Derived from
+# decoder_models.DECODER_MODELS -- the single source of truth -- so adding a
+# decoder family there wires it into the generic runner automatically.
+_DECODER_FAMILIES = frozenset(DECODER_MODELS)
+
+
 def _macro_prefix(config: dict) -> str:
-    """Return the C macro prefix, e.g. BUDDY_DSR1."""
-    family = config["model_family"].upper()
-    short = {"DEEPSEEK_R1": "DSR1"}.get(family, family)
+    """Return the C macro prefix, e.g. BUDDY_DECODER.
+
+    Decoder-only families default to the shared ``BUDDY_DECODER`` prefix so a
+    single generic runner can reference the shape/token constants regardless of
+    model family. A spec may still override via ``tokens.macro_prefix`` (the
+    spec's ``macro_prefix`` field).
+    """
+    override = config.get("tokens", {}).get("macro_prefix")
+    if override:
+        return f"BUDDY_{str(override).upper()}"
+    family = config["model_family"]
+    if family in _DECODER_FAMILIES:
+        return "BUDDY_DECODER"
+    short = {"DEEPSEEK_R1": "DSR1"}.get(family.upper(), family.upper())
     return f"BUDDY_{short}"
 
 
@@ -226,6 +252,35 @@ def gen_header(config: dict) -> str:
         p(f"#ifndef {macro}")
         p(f"#define {macro} {val}")
         p("#endif")
+
+    # Token / codec config (single source of truth for the Runner layer).
+    # The Runner reads these instead of hardcoding eos/pad/stop/display/tokenizer.
+    tokens = config.get("tokens", {})
+    eos = tokens.get("eos_id", 0)
+    pad = tokens.get("pad_token_id", 0)
+    stop_ids = tokens.get("stop_token_ids") or [eos]
+    display = tokens.get("display_name", config["model_family"])
+    tokenizer = tokens.get("tokenizer", "unknown")
+
+    for name, val in [("EOS_TOKEN_ID", eos), ("PAD_TOKEN_ID", pad)]:
+        macro = f"{mp}_{name}"
+        p(f"#ifndef {macro}")
+        p(f"#define {macro} {val}")
+        p("#endif")
+
+    stop_list = ", ".join(str(int(i)) for i in stop_ids)
+    p(f"#ifndef {mp}_STOP_TOKEN_IDS")
+    p(f"#define {mp}_STOP_TOKEN_IDS {{{stop_list}}}")
+    p("#endif")
+    p(f"#ifndef {mp}_DISPLAY_NAME")
+    p(f'#define {mp}_DISPLAY_NAME "{display}"')
+    p("#endif")
+    p(f"#ifndef {mp}_TOKENIZER")
+    p(f'#define {mp}_TOKENIZER "{tokenizer}"')
+    p("#endif")
+    p(f"#ifndef {mp}_MODEL_NAME")
+    p(f'#define {mp}_MODEL_NAME "{config["model_family"]}"')
+    p("#endif")
 
     p()
     p("namespace buddy {")

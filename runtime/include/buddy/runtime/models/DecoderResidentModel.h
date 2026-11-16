@@ -1,4 +1,4 @@
-//===- DeepSeekR1ResidentModel.h - DeepSeekR1 serving model ---------------===//
+//===- DecoderResidentModel.h - generic decoder serving model -------------===//
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,8 +14,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef BUDDY_RUNTIME_MODELS_DEEPSEEKR1RESIDENTMODEL_H
-#define BUDDY_RUNTIME_MODELS_DEEPSEEKR1RESIDENTMODEL_H
+#ifndef BUDDY_RUNTIME_MODELS_DECODERRESIDENTMODEL_H
+#define BUDDY_RUNTIME_MODELS_DECODERRESIDENTMODEL_H
 
 #include "buddy/runtime/core/ResidentModel.h"
 
@@ -24,18 +24,20 @@
 namespace buddy {
 namespace runtime {
 
-/// Long-lived DeepSeekR1 model for buddy-server.
+/// Long-lived decoder-only model for buddy-server.
 ///
 /// This implementation owns a single ModelSession and keeps loaded weights in
 /// memory after load(). Generation is serialized internally, which makes the
 /// MVP safe for one resident session while leaving room for a future slot pool.
-class DeepSeekR1ResidentModel : public ResidentModel {
+/// The model family is fixed at compile time by BUDDY_DECODER_* macros, so the
+/// same source serves every decoder family.
+class DecoderResidentModel : public ResidentModel {
 public:
-  DeepSeekR1ResidentModel();
-  ~DeepSeekR1ResidentModel() override;
+  DecoderResidentModel();
+  ~DecoderResidentModel() override;
 
-  DeepSeekR1ResidentModel(const DeepSeekR1ResidentModel &) = delete;
-  DeepSeekR1ResidentModel &operator=(const DeepSeekR1ResidentModel &) = delete;
+  DecoderResidentModel(const DecoderResidentModel &) = delete;
+  DecoderResidentModel &operator=(const DecoderResidentModel &) = delete;
 
   void load(const ResidentModelConfig &cfg) override;
   ModelStatus status() const override;
@@ -58,4 +60,4 @@ private:
 } // namespace runtime
 } // namespace buddy
 
-#endif // BUDDY_RUNTIME_MODELS_DEEPSEEKR1RESIDENTMODEL_H
+#endif // BUDDY_RUNTIME_MODELS_DECODERRESIDENTMODEL_H

@@ -1,4 +1,4 @@
-//===- DeepSeekR1ResidentModel.cpp - DeepSeekR1 serving model -------------===//
+//===- DecoderResidentModel.cpp - generic decoder serving model -----------===//
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "buddy/runtime/models/DeepSeekR1ResidentModel.h"
+#include "buddy/runtime/models/DecoderResidentModel.h"
 
 #include "buddy/Core/Container.h"
 #include "buddy/LLM/ChatTemplate.h"
@@ -22,6 +22,7 @@
 #include "buddy/runtime/core/ModelError.h"
 #include "buddy/runtime/core/ModelManifest.h"
 #include "buddy/runtime/llm/TextGeneration.h"
+#include "buddy/runtime/models/DecoderCodec.h"
 #include "buddy/runtime/models/ModelSession.h"
 
 #include <algorithm>
@@ -40,9 +41,6 @@ namespace runtime {
 namespace {
 
 using buddy::Text;
-
-static constexpr int kEosToken = 151643; // <|end▁of▁sentence|>
-static constexpr int kEotToken = 151647; // <|EOT|>
 
 FinishReason toFinishReason(const GenerationResult &result) {
   if (result.cancelled)
@@ -88,7 +86,7 @@ mergeStopTokenIds(const std::vector<long long> &base,
 
 } // namespace
 
-class DeepSeekR1ResidentModel::Impl {
+class DecoderResidentModel::Impl {
 public:
   void load(const ResidentModelConfig &cfg) {
     std::lock_guard<std::mutex> lock(mutex);
@@ -96,7 +94,7 @@ public:
     statusValue = {};
     statusValue.state = ModelLoadState::Loading;
     statusValue.modelName =
-        cfg.modelName.empty() ? "deepseek_r1" : cfg.modelName;
+        cfg.modelName.empty() ? BUDDY_DECODER_MODEL_NAME : cfg.modelName;
     statusValue.backend = "cpu";
 
     try {
@@ -175,9 +173,9 @@ private:
     } else {
       if (cfg.modelSoPath.empty())
         throw std::invalid_argument(
-            "DeepSeekR1ResidentModel: modelSoPath is empty");
+            "DecoderResidentModel: modelSoPath is empty");
       if (cfg.weightPaths.empty())
-        throw std::invalid_argument("DeepSeekR1ResidentModel: no weight paths");
+        throw std::invalid_argument("DecoderResidentModel: no weight paths");
 
       ModelSession::Config mcfg;
       mcfg.modelSoPath = cfg.modelSoPath;
@@ -191,12 +189,11 @@ private:
     }
 
     if (vocabPath.empty())
-      throw std::invalid_argument(
-          "DeepSeekR1ResidentModel: vocab path is empty");
+      throw std::invalid_argument("DecoderResidentModel: vocab path is empty");
 
     session->loadWeights(resolvedWeightPaths);
 
-    stopTokenIds = {kEosToken, kEotToken};
+    stopTokenIds = BUDDY_DECODER_STOP_TOKEN_IDS;
     if (!cfg.chatTemplatePath.empty()) {
       chatTemplate = std::make_unique<buddy::ChatTemplate>(
           buddy::ChatTemplate::fromFile(cfg.chatTemplatePath));
@@ -210,27 +207,23 @@ private:
       chatTemplate.reset();
     }
 
-    codec.tokenize = [](Text<size_t, 2> &t, const std::string &vocab) {
-      t.tokenizeDeepSeekR1(vocab, BUDDY_DSR1_MAX_TOKEN_LEN);
-    };
-    codec.detokenize = [](Text<size_t, 2> &t) { return t.revertDeepSeekR1(); };
-    codec.maxTokenLen = BUDDY_DSR1_MAX_TOKEN_LEN;
+    codec = makeDecoderCodec();
 
-    statusValue.contextLength = BUDDY_DSR1_MAX_TOKEN_LEN;
+    statusValue.contextLength = BUDDY_DECODER_MAX_TOKEN_LEN;
     loaded = true;
   }
 
   void ensureLoadedUnlocked() const {
     if (!loaded || !session)
       throw ModelException(ModelErrorCode::ModelNotReady,
-                           "DeepSeekR1ResidentModel: model is not loaded");
+                           "DecoderResidentModel: model is not loaded");
   }
 
   std::string renderChatUnlocked(const ChatCompletionRequest &request) const {
     if (!chatTemplate)
       throw ModelException(
           ModelErrorCode::NotSupported,
-          "DeepSeekR1ResidentModel: chat template is not configured");
+          "DecoderResidentModel: chat template is not configured");
 
     std::vector<buddy::Message> messages;
     messages.reserve(request.messages.empty() ? 1 : request.messages.size());
@@ -248,7 +241,7 @@ private:
   TokenizeResult tokenizeUnlocked(const std::string &content,
                                   bool countOnly) const {
     Text<size_t, 2> tokens(content);
-    tokens.tokenizeDeepSeekR1(vocabPath, BUDDY_DSR1_MAX_TOKEN_LEN);
+    tokenizeDecoder(tokens, vocabPath);
 
     TokenizeResult result;
     result.count = tokens.getTokenCnt();
@@ -317,46 +310,44 @@ private:
   std::vector<long long> stopTokenIds;
 };
 
-DeepSeekR1ResidentModel::DeepSeekR1ResidentModel()
-    : impl(std::make_unique<Impl>()) {}
+DecoderResidentModel::DecoderResidentModel() : impl(std::make_unique<Impl>()) {}
 
-DeepSeekR1ResidentModel::~DeepSeekR1ResidentModel() = default;
+DecoderResidentModel::~DecoderResidentModel() = default;
 
-void DeepSeekR1ResidentModel::load(const ResidentModelConfig &cfg) {
+void DecoderResidentModel::load(const ResidentModelConfig &cfg) {
   impl->load(cfg);
 }
 
-ModelStatus DeepSeekR1ResidentModel::status() const { return impl->status(); }
+ModelStatus DecoderResidentModel::status() const { return impl->status(); }
 
 std::string
-DeepSeekR1ResidentModel::renderChat(const ChatCompletionRequest &request) {
+DecoderResidentModel::renderChat(const ChatCompletionRequest &request) {
   return impl->renderChat(request);
 }
 
-TokenizeResult
-DeepSeekR1ResidentModel::tokenize(const TokenizeRequest &request) {
+TokenizeResult DecoderResidentModel::tokenize(const TokenizeRequest &request) {
   return impl->tokenize(request);
 }
 
 CompletionResult
-DeepSeekR1ResidentModel::complete(const CompletionRequest &request) {
+DecoderResidentModel::complete(const CompletionRequest &request) {
   return impl->complete(request);
 }
 
-CompletionResult DeepSeekR1ResidentModel::completeStream(
-    const CompletionRequest &request,
-    const CompletionStreamCallback &callback) {
+CompletionResult
+DecoderResidentModel::completeStream(const CompletionRequest &request,
+                                     const CompletionStreamCallback &callback) {
   return impl->completeStream(request, callback);
 }
 
 CompletionResult
-DeepSeekR1ResidentModel::chat(const ChatCompletionRequest &request) {
+DecoderResidentModel::chat(const ChatCompletionRequest &request) {
   return impl->chat(request);
 }
 
 CompletionResult
-DeepSeekR1ResidentModel::chatStream(const ChatCompletionRequest &request,
-                                    const CompletionStreamCallback &callback) {
+DecoderResidentModel::chatStream(const ChatCompletionRequest &request,
+                                 const CompletionStreamCallback &callback) {
   return impl->chatStream(request, callback);
 }
 

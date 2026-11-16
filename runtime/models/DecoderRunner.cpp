@@ -1,4 +1,4 @@
-//===- DeepSeekR1Runner.cpp - DeepSeekR1 full inference loop --------------===//
+//===- DecoderRunner.cpp - generic decoder-only inference loop ------------===//
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements DeepSeekR1Runner::run().  This file owns session setup and
+// Implements DecoderRunner::run().  This file owns session setup and
 // dispatch:
 //   - weight file loading
 //   - chat template loading
@@ -25,7 +25,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "buddy/runtime/models/DeepSeekR1Runner.h"
+#include "buddy/runtime/models/DecoderRunner.h"
 #include "buddy/LLM/ChatTemplate.h"
 #include "buddy/LLM/ConversationManager.h"
 #include "buddy/LLM/TextContainer.h"
@@ -34,6 +34,7 @@
 #include "buddy/runtime/llm/InteractiveSession.h"
 #include "buddy/runtime/llm/Perplexity.h"
 #include "buddy/runtime/llm/TextGeneration.h"
+#include "buddy/runtime/models/DecoderCodec.h"
 #include "buddy/runtime/models/ModelSession.h"
 
 #include "buddy/Core/Container.h"
@@ -52,9 +53,6 @@ namespace buddy {
 namespace runtime {
 
 namespace {
-static constexpr int kEosToken = 151643; // <|end▁of▁sentence|>
-static constexpr int kEotToken = 151647; // <|EOT|>
-
 /// Create a session for @p cfg (Mode A: .rax manifest, or Mode B: explicit
 /// paths) and load its weights. Shared by run() and runBench().
 std::unique_ptr<ModelSession>
@@ -105,38 +103,27 @@ createSession(const RunConfig &cfg, std::vector<std::string> &weightPaths,
   return session;
 }
 
-/// Model-specific text codec for DeepSeekR1.
-TextCodec makeDeepSeekR1Codec() {
-  TextCodec codec;
-  codec.tokenize = [](Text<size_t, 2> &t, const std::string &vocab) {
-    t.tokenizeDeepSeekR1(vocab, BUDDY_DSR1_MAX_TOKEN_LEN);
-  };
-  codec.detokenize = [](Text<size_t, 2> &t) { return t.revertDeepSeekR1(); };
-  codec.maxTokenLen = BUDDY_DSR1_MAX_TOKEN_LEN;
-  return codec;
-}
-
-/// Benign newline token (already used by the DeepSeekR1 scaffold) for padding
+/// Benign newline token (already used by the per-model scaffolds) for padding
 /// a fixed-length prompt; avoid EOS so the first sampled token is not a stop
 /// token that would end decode immediately.
-static constexpr int kPadToken = 198;
+static constexpr int kPadToken = BUDDY_DECODER_PAD_TOKEN_ID;
 } // namespace
 
 //===----------------------------------------------------------------------===//
-// DeepSeekR1Runner::run
+// DecoderRunner::run
 //===----------------------------------------------------------------------===//
 
-void DeepSeekR1Runner::run(const RunConfig &cfgIn) {
+void DecoderRunner::run(const RunConfig &cfgIn) {
   RunConfig cfg = cfgIn;
 
   const bool suppress = cfg.suppressStats || cfg.streamJsonl;
 
   if (!suppress)
-    std::cerr
-        << "\033[33;1mDeepSeekR1 Inference (buddy-cli / BuddyRuntime)\033[0m\n";
+    std::cerr << "\033[33;1m" BUDDY_DECODER_DISPLAY_NAME
+              << " Inference (buddy-cli / BuddyRuntime)\033[0m\n";
 
   // ── Chat template: load if provided ─────────────────────────────────────
-  std::vector<long long> stopTokenIds = {kEosToken, kEotToken};
+  std::vector<long long> stopTokenIds = BUDDY_DECODER_STOP_TOKEN_IDS;
   std::unique_ptr<buddy::ChatTemplate> chatTmpl;
 
   if (!cfg.chatTemplatePath.empty()) {
@@ -159,11 +146,11 @@ void DeepSeekR1Runner::run(const RunConfig &cfgIn) {
 
   // ── Perplexity mode: score a token stream instead of generating ─────────
   if (!cfg.perplexityIdsPath.empty()) {
-    if (cfg.perplexityContext > BUDDY_DSR1_MAX_TOKEN_LEN)
+    if (cfg.perplexityContext > BUDDY_DECODER_MAX_TOKEN_LEN)
       throw std::runtime_error(
           "--ppl-context " + std::to_string(cfg.perplexityContext) +
-          " exceeds the KV cache (" + std::to_string(BUDDY_DSR1_MAX_TOKEN_LEN) +
-          " tokens)");
+          " exceeds the KV cache (" +
+          std::to_string(BUDDY_DECODER_MAX_TOKEN_LEN) + " tokens)");
     PerplexityOptions opts;
     opts.context = cfg.perplexityContext;
     opts.maxChunks = cfg.perplexityChunks;
@@ -173,14 +160,14 @@ void DeepSeekR1Runner::run(const RunConfig &cfgIn) {
   }
 
   printLog("Vocab: " + vocabPath, suppress);
-  printLog("KV cache: " + std::to_string(BUDDY_DSR1_KV_LAYERS) + " x {1," +
-               std::to_string(BUDDY_DSR1_HEAD_NUM) + "," +
-               std::to_string(BUDDY_DSR1_MAX_TOKEN_LEN) + "," +
-               std::to_string(BUDDY_DSR1_HIDDEN_SIZE) + "} f32",
+  printLog("KV cache: " + std::to_string(BUDDY_DECODER_KV_LAYERS) + " x {1," +
+               std::to_string(BUDDY_DECODER_HEAD_NUM) + "," +
+               std::to_string(BUDDY_DECODER_MAX_TOKEN_LEN) + "," +
+               std::to_string(BUDDY_DECODER_HIDDEN_SIZE) + "} f32",
            suppress);
 
   // ── Model-specific text codec ───────────────────────────────────────────
-  TextCodec codec = makeDeepSeekR1Codec();
+  TextCodec codec = makeDecoderCodec();
 
   // ── Create Sampler ───────────────────────────────────────────────────────
   buddy::Sampler sampler(cfg.samplerConfig);
@@ -194,7 +181,7 @@ void DeepSeekR1Runner::run(const RunConfig &cfgIn) {
     buddy::ConversationManager conv(
         std::move(*chatTmpl), [&vocabPath](const std::string &text) -> size_t {
           Text<size_t, 2> tmp(text);
-          tmp.tokenizeDeepSeekR1(vocabPath, BUDDY_DSR1_MAX_TOKEN_LEN);
+          tokenizeDecoder(tmp, vocabPath);
           return tmp.getTokenCnt();
         });
     if (!cfg.prompt.empty())
@@ -220,14 +207,14 @@ void DeepSeekR1Runner::run(const RunConfig &cfgIn) {
 }
 
 //===----------------------------------------------------------------------===//
-// DeepSeekR1Runner::runBench
+// DecoderRunner::runBench
 //===----------------------------------------------------------------------===//
 
-DeepSeekR1Runner::DeepSeekR1Runner() = default;
-DeepSeekR1Runner::~DeepSeekR1Runner() = default;
+DecoderRunner::DecoderRunner() = default;
+DecoderRunner::~DecoderRunner() = default;
 
-bool DeepSeekR1Runner::runBench(const RunConfig &cfgIn, int warmupReps,
-                                int reps, std::vector<BenchmarkResult> &out) {
+bool DecoderRunner::runBench(const RunConfig &cfgIn, int warmupReps, int reps,
+                             std::vector<BenchmarkResult> &out) {
   RunConfig cfg = cfgIn;
   cfg.suppressStats = true;
   const bool suppress = true;
@@ -235,10 +222,10 @@ bool DeepSeekR1Runner::runBench(const RunConfig &cfgIn, int warmupReps,
   // A fixed prompt length is padded or truncated to exactly that many tokens;
   // beyond the KV cache the padded token buffer would overrun the prefill
   // kernel's expected shape.
-  const TextCodec codec = makeDeepSeekR1Codec();
+  const TextCodec codec = makeDecoderCodec();
   if (cfg.promptLength > codec.maxTokenLen) {
     std::fprintf(stderr,
-                 "DeepSeekR1Runner: promptLength %d exceeds the KV cache (%d "
+                 "DecoderRunner: promptLength %d exceeds the KV cache (%d "
                  "tokens)\n",
                  cfg.promptLength, codec.maxTokenLen);
     return false;
@@ -260,7 +247,7 @@ bool DeepSeekR1Runner::runBench(const RunConfig &cfgIn, int warmupReps,
   const std::string &vocabPath = benchVocabPath_;
 
   buddy::Sampler sampler(cfg.samplerConfig);
-  const std::vector<long long> stopTokenIds = {kEosToken, kEotToken};
+  const std::vector<long long> stopTokenIds = BUDDY_DECODER_STOP_TOKEN_IDS;
 
   // The tiered KV cache rounds the prompt up to a cache tier; report the
   // positions the prefill actually computed.

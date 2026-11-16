@@ -153,6 +153,7 @@ from ..graph import (
     LtTensorOp,
     MaskedFillOp,
     MaskedScatterOp,
+    MatmulOp,
     MaxDimOp,
     MaximumOp,
     MaxPool1dOp,
@@ -701,6 +702,63 @@ def addmm_op(
         # Add input_ with broadcasting
         op = _gen_arith_binary_op(input_, matmul_op.result, tosa.AddOp)
         return op
+
+
+def mm_op(
+    node: MatmulOp, symbol_table: dict[tuple[str, int], ir.Operation]
+) -> ir.Operation:
+    """
+    Import bias-less matrix multiplication.
+    From buddy graph ir's `MatmulOp` operator to MLIR linalg `matmul` operation.
+
+    Corresponds to torch ``aten.mm`` (``mat1 @ mat2``, no bias).  Unlike
+    ``addmm_op`` there is no input/bias tensor to accumulate into, so the
+    result is materialised into a zero-initialised buffer.
+
+    Args:
+        node: Containing information from the input graph node.
+        symbol_table: A dictionary mapping symbols to their corresponding
+        operations.
+
+    Returns:
+        op: The operation representing ``mat1 @ mat2``.
+    """
+    mat1 = symbol_table.get((str(node.args[0]), 0))
+    mat2 = symbol_table.get((str(node.args[1]), 0))
+
+    mat1_shp = ir.RankedTensorType(mat1.type).shape
+    mat2_shp = ir.RankedTensorType(mat2.type).shape
+    result_element_type = ir.RankedTensorType(mat1.type).element_type
+
+    matmul_result_shp = [mat1_shp[0], mat2_shp[1]]
+    matmul_result_type = ir.RankedTensorType.get(
+        matmul_result_shp, result_element_type
+    )
+
+    generic_map = ir.AffineMap.get_permutation([0, 1, 2])
+
+    zero_attr = (
+        ir.FloatAttr.get(result_element_type, 0.0)
+        if _is_float_type(result_element_type)
+        else ir.IntegerAttr.get(result_element_type, 0)
+    )
+    matmul_output_buffer = zero_tensor_value(
+        matmul_result_shp, result_element_type, zero_attr
+    )
+
+    matmul_op = linalg.MatmulOp(
+        result_tensors=[matmul_result_type],
+        inputs=[mat1, mat2],
+        outputs=[matmul_output_buffer],
+        indexing_maps=[
+            generic_map.get_submap([0, 2]),  # lhs: (m, k)
+            generic_map.get_submap([2, 1]),  # rhs: (k, n)
+            generic_map.get_submap([0, 1]),  # out: (m, n)
+        ],
+        cast="cast_signed",
+    )
+    linalg.fill_builtin_region(matmul_op.operation)
+    return matmul_op.result
 
 
 def bmm_op(node: BatchMatmulOp, symbol_table) -> ir.Operation:
@@ -4363,6 +4421,16 @@ def flash_attention_for_cpu_prefill_op(
     attn_mask = node.kwargs.get("attn_mask", None)
     scale = node.kwargs.get("scale", None)
 
+    # is_causal arrives positionally in the exported FX node:
+    # (query, key, value, dropout_p, is_causal). Qwen2.5 prefill traces with
+    # is_causal=True and no explicit attn_mask, so the causal mask must be
+    # applied on the score tile below rather than via an additive mask.
+    is_causal = False
+    if len(node.args) >= 5:
+        is_causal = bool(node.args[4])
+    elif "is_causal" in node.kwargs:
+        is_causal = bool(node.kwargs["is_causal"])
+
     c0 = arith.ConstantOp(index, 0, loc=loc)
     query_shape = query.type.shape
     key_shape = key.type.shape
@@ -4407,6 +4475,11 @@ def flash_attention_for_cpu_prefill_op(
     q_seq_len = arith.ConstantOp(index, query_shape[2], loc=loc)
     head_dim = arith.ConstantOp(index, query_shape[3], loc=loc)
     k_seq_len = arith.ConstantOp(index, key_shape[2], loc=loc)
+    # GQA: query heads and KV heads may differ (e.g. Qwen2.5-0.5B is 14 vs 2).
+    # Map each query head h to its KV head h // group_size, mirroring the
+    # decode path gqa_attention_fused_op. For MHA (equal head counts) this is
+    # 1 and h_kv == h, so the indexing is bit-for-bit unchanged.
+    group_size = query_shape[1] // key_shape[1]
 
     block_size_q_num = 16
     block_size_kv_num = 64
@@ -4446,6 +4519,8 @@ def flash_attention_for_cpu_prefill_op(
             h = body_block.add_argument(
                 ir.IndexType.get(), ir.Location.unknown()
             )
+            group_size_i = arith.ConstantOp(index, group_size, loc=loc).result
+            h_kv = arith.DivSIOp(h, group_size_i, loc=loc).result
             # query sequence length block loop
             loop_q = affine.AffineParallelOp(
                 results_=[],
@@ -4572,7 +4647,7 @@ def flash_attention_for_cpu_prefill_op(
                                     v16_qkv, Q_memref, [b, h, idx_q, k]
                                 )
                                 k_data = vector.LoadOp(
-                                    v16_qkv, K_memref, [b, h, idx_k, k]
+                                    v16_qkv, K_memref, [b, h_kv, idx_k, k]
                                 )
                                 # Upcast to f32 for FMA accumulation
                                 if need_cast:
@@ -4612,6 +4687,20 @@ def flash_attention_for_cpu_prefill_op(
                                 ).result
                             else:
                                 score_tile_masked = score_tile_scaled
+                            if is_causal:
+                                # Causal attention: query position idx_q may
+                                # attend to key position idx_k only when
+                                # idx_k <= idx_q; mask future positions to
+                                # -inf (the online-softmax running max).
+                                is_past = arith.CmpIOp(
+                                    arith.CmpIPredicate.sle,
+                                    idx_k,
+                                    idx_q,
+                                    loc=loc,
+                                ).result
+                                score_tile_masked = arith.SelectOp(
+                                    is_past, score_tile_masked, neg_inf, loc=loc
+                                ).result
                             memref.StoreOp(
                                 score_tile_masked, score_tile_memref, [qi, kj]
                             )
@@ -4693,7 +4782,7 @@ def flash_attention_for_cpu_prefill_op(
                                 k = loop_k.induction_variable
                                 # Load V in tensor element type
                                 v_data = vector.LoadOp(
-                                    v16_qkv, V_memref, [b, h, idx_k, k]
+                                    v16_qkv, V_memref, [b, h_kv, idx_k, k]
                                 )
                                 # Upcast to f32 for FMA
                                 if need_cast:
@@ -14650,6 +14739,7 @@ ops_registry = {
     "ExpandOp": expand_op,
     "VarMeanOp": var_mean_op,
     "AddMMOp": addmm_op,
+    "MatmulOp": mm_op,
     "ReshapeOp": reshape_op,
     "ViewOp": reshape_op,
     "ViewDtypeOp": view_dtype_op,

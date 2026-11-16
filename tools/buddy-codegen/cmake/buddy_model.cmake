@@ -22,8 +22,8 @@
 #   buddy_add_model(
 #     NAME        deepseek_r1
 #     SPEC        ${CMAKE_CURRENT_SOURCE_DIR}/specs/f32.json
-#     RUNNER_SRC  DeepSeekR1Runner.cpp
-#     RUNNER_HDR  include/buddy/runtime/models/DeepSeekR1Runner.h
+#     RUNNER_SRC  DecoderRunner.cpp
+#     RUNNER_PLUGIN_SRC DecoderRunnerPlugin.cpp
 #   )
 #
 # This creates:
@@ -371,6 +371,31 @@ macro(_buddy_pack_runtime_deps)
   list(APPEND MDL_EXTRA_STAGE4_DEPS ${_packed})
 endmacro()
 
+# Resolve a source path handed to buddy_add_model (RUNNER_SRC, RUNNER_PLUGIN_SRC,
+# MODEL_PLUGIN_SRC, EXTRA_SRCS). The path may be:
+#   - absolute (already resolved by the caller);
+#   - relative to the per-model directory (the legacy layout); or
+#   - relative to the shared decoder runtime directory (BUDDY_SOURCE_DIR/runtime/models).
+# The per-model directory wins when both exist, so existing models keep
+# building unchanged; otherwise the shared file is used.
+function(_buddy_model_src SRC OUT)
+  if(IS_ABSOLUTE "${SRC}")
+    set(${OUT} "${SRC}" PARENT_SCOPE)
+    return()
+  endif()
+  set(_candidate "${CMAKE_CURRENT_SOURCE_DIR}/${SRC}")
+  if(EXISTS "${_candidate}")
+    set(${OUT} "${_candidate}" PARENT_SCOPE)
+    return()
+  endif()
+  set(_shared "${BUDDY_SOURCE_DIR}/runtime/models/${SRC}")
+  if(EXISTS "${_shared}")
+    set(${OUT} "${_shared}" PARENT_SCOPE)
+    return()
+  endif()
+  set(${OUT} "${_candidate}" PARENT_SCOPE)
+endfunction()
+
 function(buddy_add_model)
   cmake_parse_arguments(
     MDL                                      # prefix
@@ -659,6 +684,7 @@ function(buddy_add_model)
       COMMAND ${CMAKE_COMMAND} -E make_directory "${GEN_DIR}"
       COMMAND ${GEN_CONFIG_CMD}
       DEPENDS "${MDL_SPEC}" "${BUDDY_CODEGEN_DIR}/gen_config.py"
+              "${BUDDY_CODEGEN_DIR}/decoder_models.py"
       COMMENT "[${MDL_NAME}] Generating config.json from ${MDL_SPEC}"
       VERBATIM
     )
@@ -707,11 +733,15 @@ function(buddy_add_model)
 
   set(LIB_TARGET "buddy_models_${MDL_NAME}")
 
-  set(MDL_RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/${MDL_RUNNER_SRC}")
+  _buddy_model_src("${MDL_RUNNER_SRC}" _runner_src)
+  set(MDL_RUNTIME_SOURCES "${_runner_src}")
   if(NOT MDL_MODEL_KIND STREQUAL "single_forward" AND NOT MDL_CUSTOM_QWEN3_VL)
     list(PREPEND MDL_RUNTIME_SOURCES "${GEN_SESS_CC}")
   endif()
-  list(APPEND MDL_RUNTIME_SOURCES ${MDL_EXTRA_SRCS})
+  foreach(_extra IN LISTS MDL_EXTRA_SRCS)
+    _buddy_model_src("${_extra}" _extra_src)
+    list(APPEND MDL_RUNTIME_SOURCES "${_extra_src}")
+  endforeach()
   add_library(${LIB_TARGET} STATIC ${MDL_RUNTIME_SOURCES})
 
   target_include_directories(${LIB_TARGET} PUBLIC
@@ -731,7 +761,7 @@ function(buddy_add_model)
   if(NOT MDL_MODEL_KIND STREQUAL "single_forward")
     target_link_libraries(${LIB_TARGET} PUBLIC buddy_runtime_llm)
   endif()
-  install(FILES ${MDL_RUNNER_SRC}
+  install(FILES ${_runner_src}
     DESTINATION include/buddy-mlir/buddy/runtime/models/
     COMPONENT buddy_runtime
   )
@@ -747,9 +777,8 @@ function(buddy_add_model)
   )
 
   set(RUNNER_PLUGIN_TARGET "buddy_models_${MDL_NAME}_runner")
-  add_library(${RUNNER_PLUGIN_TARGET} SHARED
-    "${CMAKE_CURRENT_SOURCE_DIR}/${MDL_RUNNER_PLUGIN_SRC}"
-  )
+  _buddy_model_src("${MDL_RUNNER_PLUGIN_SRC}" _runner_plugin_src)
+  add_library(${RUNNER_PLUGIN_TARGET} SHARED "${_runner_plugin_src}")
   set_target_properties(${RUNNER_PLUGIN_TARGET} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${BIN}"
     RUNTIME_OUTPUT_DIRECTORY "${BIN}"
@@ -953,8 +982,8 @@ function(buddy_add_model)
 
   if(MDL_MODEL_PLUGIN_SRC)
     set(MODEL_PLUGIN_TARGET "buddy_models_${MDL_NAME}_server")
-    add_library(${MODEL_PLUGIN_TARGET} SHARED
-      "${CMAKE_CURRENT_SOURCE_DIR}/${MDL_MODEL_PLUGIN_SRC}")
+    _buddy_model_src("${MDL_MODEL_PLUGIN_SRC}" _model_plugin_src)
+    add_library(${MODEL_PLUGIN_TARGET} SHARED "${_model_plugin_src}")
     set_target_properties(${MODEL_PLUGIN_TARGET} PROPERTIES
       LIBRARY_OUTPUT_DIRECTORY "${BIN}"
       RUNTIME_OUTPUT_DIRECTORY "${BIN}"
