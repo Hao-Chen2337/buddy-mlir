@@ -66,6 +66,9 @@ def VIR_DynamicVectorType : TypeDef<VIR_Dialect, "DynamicVector",
     vec<?xf64, f2>
     vec<?xf32, m2>
     ```
+
+    The scaling factor is printed as above; `#vir.sf<m2>` (the attribute)
+    is also accepted.
   }];
 
   let parameters = (ins
@@ -89,6 +92,7 @@ def VIR_DynamicVectorType : TypeDef<VIR_Dialect, "DynamicVector",
   ];
 
   let hasCustomAssemblyFormat = 1;
+  let genVerifyDecl = 1;
 
   let extraClassDeclaration = [{
     /// Returns if this type is ranked (always true).
@@ -96,9 +100,10 @@ def VIR_DynamicVectorType : TypeDef<VIR_Dialect, "DynamicVector",
 
     /// Clone this vector type with the given shape and element type. If the
     /// provided shape is `std::nullopt`, the current shape of the type is used.
+    /// The scaling factor is kept: the clone has as many lanes.
     DynamicVectorType cloneWith(std::optional<llvm::ArrayRef<int64_t>> shape,
                        Type elementType) const {
-      return get(shape.value_or(getShape()), elementType);
+      return get(shape.value_or(getShape()), elementType, getScalingFactor());
     }
   }];
 }
