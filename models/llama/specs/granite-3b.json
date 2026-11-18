@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "ibm-granite/granite-3.0-2b-instruct",
+  "model_family": "llama",
+  "variant": "f16",
+  "max_token_len": 1024,
+  "num_threads": 32
+}

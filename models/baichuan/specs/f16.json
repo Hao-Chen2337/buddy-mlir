@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "baichuan-inc/Baichuan-7B",
+  "model_family": "baichuan",
+  "variant": "f16",
+  "max_token_len": 1024,
+  "num_threads": 32
+}

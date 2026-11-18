@@ -1,0 +1,8 @@
+{
+  "hf_model_path": "Qwen/Qwen2.5-0.5B-Instruct",
+  "model_family": "qwen25",
+  "max_token_len": 1024,
+  "num_threads": 32,
+  "pad_token_id": 198,
+  "variant": "f32"
+}

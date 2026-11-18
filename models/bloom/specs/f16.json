@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "bigscience/bloom-560m",
+  "model_family": "bloom",
+  "variant": "f16",
+  "max_token_len": 1024,
+  "num_threads": 32
+}

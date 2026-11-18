@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -96,6 +97,11 @@ public:
   T *getData();
   // Get the data.
   std::vector<T> getDataVector();
+  // Copy the contents of `src` into this MemRef.
+  // Both MemRefs must have identical sizes. `src` (and `this`) may be a
+  // strided subview; when both have the same layout the copy is a single
+  // memcpy, otherwise it falls back to an element-wise strided copy.
+  void copyFrom(const MemRef<T, N> &src);
   // Get the sizes (shape).
   const intptr_t *getSizes() { return sizes; }
   // Get the strides.
@@ -417,6 +423,41 @@ template <typename T, std::size_t N> T *MemRef<T, N>::getData() {
   size_t size = product(this->sizes);
   assert((size > 0) && "Invalid container data size.");
   return aligned;
+}
+
+// Copy the contents of `src` into this MemRef.
+template <typename T, std::size_t N>
+void MemRef<T, N>::copyFrom(const MemRef<T, N> &src) {
+  for (size_t i = 0; i < N; ++i)
+    assert(sizes[i] == src.sizes[i] && "copyFrom: shape mismatch");
+  bool sameLayout = (offset == src.offset);
+  for (size_t i = 0; i < N && sameLayout; ++i)
+    sameLayout = (strides[i] == src.strides[i]);
+  if (sameLayout) {
+    std::memcpy(aligned + offset, src.aligned + src.offset,
+                product(sizes) * sizeof(T));
+    return;
+  }
+  // General element-wise strided copy using an N-dimensional odometer (last
+  // dimension varies fastest).
+  intptr_t idx[N] = {};
+  bool done = false;
+  while (!done) {
+    intptr_t dstOff = offset;
+    intptr_t srcOff = src.offset;
+    for (size_t i = 0; i < N; ++i) {
+      dstOff += idx[i] * strides[i];
+      srcOff += idx[i] * src.strides[i];
+    }
+    aligned[dstOff] = src.aligned[srcOff];
+    for (size_t i = N; i-- > 0;) {
+      if (++idx[i] < sizes[i])
+        break;
+      idx[i] = 0;
+      if (i == 0)
+        done = true;
+    }
+  }
 }
 
 // Get the element at index.

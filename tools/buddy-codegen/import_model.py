@@ -118,6 +118,36 @@ def timed_import_step(name: str):
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+# MoE architectures whose experts are traced as one graph node
+# (buddy::moe_experts, see frontend/Python/moe.py). Each is loaded through the
+# normal AutoModelForCausalLM path and then use_buddy_moe_experts() redirects
+# its experts to buddy. Qwen3-VL-MoE is the one special case: its decoder lives
+# inside a vision-language checkpoint, so load_moe() extracts it into a
+# Qwen3MoeForCausalLM first (gen_config rewrites that checkpoint's architecture
+# to Qwen3MoeForCausalLM, so it is covered here). Add a name to support another
+# MoE architecture.
+MOE_ARCHITECTURES = frozenset(
+    {
+        "Cohere2MoeForCausalLM",
+        "DbrxForCausalLM",
+        "DeepseekV2ForCausalLM",
+        "DeepseekV3ForCausalLM",
+        "ExaoneMoeForCausalLM",
+        "Glm4MoeForCausalLM",
+        "Glm4MoeLiteForCausalLM",
+        "GraniteMoeForCausalLM",
+        "GraniteMoeSharedForCausalLM",
+        "JetMoeForCausalLM",
+        "MixtralForCausalLM",
+        "OlmoeForCausalLM",
+        "PhimoeForCausalLM",
+        "Qwen2MoeForCausalLM",
+        "Qwen3MoeForCausalLM",
+        "Qwen3_5MoeForCausalLM",
+    }
+)
+
+
 def load_model(config: dict):
     """Load model with appropriate precision."""
     model_path = (
@@ -125,8 +155,8 @@ def load_model(config: dict):
     )
     activation = config["precision"]["activation_type"]
 
-    if config.get("architecture") == "Qwen3MoeForCausalLM":
-        model = load_qwen3_moe(model_path, activation)
+    if config.get("architecture") in MOE_ARCHITECTURES:
+        model = load_moe(model_path, activation)
     elif activation == "f16":
         model = AutoModelForCausalLM.from_pretrained(model_path).eval().half()
     elif activation == "bf16":
@@ -145,13 +175,13 @@ def load_model(config: dict):
     return model
 
 
-def load_qwen3_moe(model_path: str, activation: str):
-    """A Qwen3-MoE causal LM whose experts are traced as one node each
-    (buddy.compiler.moe). From a Qwen3-VL-MoE checkpoint, its text decoder
-    (gen_config.text_decoder_config): the checkpoint is loaded as the
-    vision-language model, which converts its expert layout, and the text
-    decoder's parameters are moved, not copied, into a Qwen3MoeForCausalLM
-    (model.language_model.* -> model.*)."""
+def load_moe(model_path: str, activation: str):
+    """A MoE causal LM whose experts are traced as one node each
+    (buddy.compiler.moe). Text-only MoE architectures load through the normal
+    AutoModelForCausalLM path. Qwen3-VL-MoE is the exception: its text decoder
+    (gen_config.text_decoder_config) is extracted from the vision-language
+    checkpoint and rebuilt as a Qwen3MoeForCausalLM (the decoder's parameters
+    are moved, not copied: model.language_model.* -> model.*)."""
     from buddy.compiler.moe import use_buddy_moe_experts
     from gen_config import text_decoder_config
     from transformers import (
@@ -170,7 +200,7 @@ def load_qwen3_moe(model_path: str, activation: str):
     hf = AutoConfig.from_pretrained(model_path).to_dict()
     text = text_decoder_config(hf)
     if text is hf:
-        model = Qwen3MoeForCausalLM.from_pretrained(model_path, dtype=dtype)
+        model = AutoModelForCausalLM.from_pretrained(model_path, dtype=dtype)
     else:
         vl = Qwen3VLMoeForConditionalGeneration.from_pretrained(
             model_path, dtype=dtype

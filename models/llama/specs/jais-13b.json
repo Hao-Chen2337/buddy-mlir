@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "core42/jais-13b",
+  "model_family": "llama",
+  "variant": "f16",
+  "max_token_len": 1024,
+  "num_threads": 32
+}

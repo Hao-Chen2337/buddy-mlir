@@ -1,0 +1,8 @@
+{
+  "hf_model_path": "tiiuae/falcon-rw-1b",
+  "model_family": "falcon",
+  "max_token_len": 1024,
+  "num_threads": 32,
+  "variant": "w8a8",
+  "quantization": "w8a8"
+}

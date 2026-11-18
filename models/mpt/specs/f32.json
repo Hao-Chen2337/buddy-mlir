@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "mosaicml/mpt-7b",
+  "model_family": "mpt",
+  "max_token_len": 1024,
+  "num_threads": 32,
+  "variant": "f32"
+}

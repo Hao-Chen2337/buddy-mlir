@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "deepseek-ai/DeepSeek-V2-Lite",
+  "model_family": "deepseek_r1",
+  "variant": "f16",
+  "max_token_len": 1024,
+  "num_threads": 32
+}

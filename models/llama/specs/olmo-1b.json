@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "allenai/OLMo-1B",
+  "model_family": "llama",
+  "variant": "f16",
+  "max_token_len": 1024,
+  "num_threads": 32
+}

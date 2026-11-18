@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "EleutherAI/gpt-neo-125m",
+  "model_family": "gptneox",
+  "variant": "f16",
+  "max_token_len": 1024,
+  "num_threads": 32
+}

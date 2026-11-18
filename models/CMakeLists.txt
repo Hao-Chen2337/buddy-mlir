@@ -10,6 +10,14 @@ if(BUDDY_BUILD_LLAMA_MODEL)
   add_subdirectory(llama)
 endif()
 
+if(BUDDY_BUILD_GPT2_MODEL)
+  add_subdirectory(gpt2)
+endif()
+
+if(BUDDY_BUILD_GPTNEOX_MODEL)
+  add_subdirectory(gptneox)
+endif()
+
 if(BUDDY_BUILD_LLAMA31_TT_MODEL OR BUDDY_BUILD_LLAMA32_TT_MODEL)
   add_subdirectory(llama31_tt)
 endif()

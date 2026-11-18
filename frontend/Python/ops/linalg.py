@@ -2567,6 +2567,94 @@ def silu_op(
     return op
 
 
+def gelu_op(
+    node: GeluOp,
+    symbol_table: dict[tuple[str, int], ir.Operation],
+):
+    """
+    Import the tensor GELU activation operation.
+    From Buddy GeluOp to MLIR linalg `generic` operation.
+
+    Computes the exact (erf) GELU, matching aten.gelu with approximate="none":
+        gelu(x) = 0.5 * x * (1 + erf(x * 0.7071067811865476))
+    where 0.7071067811865476 is 1/sqrt(2), the same constant PyTorch's erf-GELU
+    kernel uses. The result agrees with aten.gelu to within ~1 ulp of the erf
+    argument (PyTorch's gelu kernel and aten.erf round the last bit
+    differently); this is far below the accuracy tolerance used for LLM logits.
+
+    Note: only the erf form is implemented. Models using the tanh
+    approximation (HF `gelu_new` / `gelu_pytorch_tanh`) are plain torch
+    compositions and trace to elementary ops (tanh/pow/sqrt), not aten.gelu.
+    """
+    assert len(node.args) == 1
+    input1 = symbol_table.get((str(node.args[0]), 0))
+    if input1 is None:
+        return
+
+    output_shape = list(node.tensor_meta["shape"])
+    dtype = node.tensor_meta["dtype"]
+    mlir_dtype = mlir_element_type_get(dtype)
+    tensor_type = ir.RankedTensorType.get(output_shape, mlir_dtype)
+    output = tensor.EmptyOp(output_shape, mlir_dtype)
+    generic_map = _safe_get_permutation([i for i in range(len(output_shape))])
+    op = linalg.GenericOp(
+        [tensor_type],
+        [input1],
+        [output],
+        ir.ArrayAttr.get(
+            [
+                ir.AffineMapAttr.get(
+                    generic_map.get_submap(
+                        [i for i in range(len(output_shape))]
+                    )
+                ),
+                ir.AffineMapAttr.get(
+                    generic_map.get_submap(
+                        [i for i in range(len(output_shape))]
+                    )
+                ),
+            ]
+        ),
+        ir.ArrayAttr.get(
+            [ir.Attribute.parse("#linalg.iterator_type<parallel>")]
+            * len(output_shape)
+        ),
+    )
+    block = ir.Block.create_at_start(
+        op.region,
+        [
+            ir.RankedTensorType(input1.type).element_type,
+            ir.RankedTensorType(output.result.type).element_type,
+        ],
+    )
+    # x * 0.7071067811865476
+    inv_sqrt2_op = arith.ConstantOp(
+        mlir_dtype, mlir_element_attr_get(dtype, 0.7071067811865476)
+    )
+    scaled_op = arith.MulFOp(block.arguments[0], inv_sqrt2_op.result)
+    # erf(x * 0.7071067811865476)
+    erf_op = math.ErfOp(scaled_op.result)
+    # 1 + erf(...)
+    one_op = arith.ConstantOp(mlir_dtype, mlir_element_attr_get(dtype, 1))
+    one_plus_op = arith.AddFOp(one_op.result, erf_op.result)
+    # 0.5 * (1 + erf(...))
+    half_op = arith.ConstantOp(mlir_dtype, mlir_element_attr_get(dtype, 0.5))
+    half_scale_op = arith.MulFOp(half_op.result, one_plus_op.result)
+    # x * 0.5 * (1 + erf(...))
+    result_op = arith.MulFOp(block.arguments[0], half_scale_op.result)
+    block.append(inv_sqrt2_op)
+    block.append(scaled_op)
+    block.append(erf_op)
+    block.append(one_op)
+    block.append(one_plus_op)
+    block.append(half_op)
+    block.append(half_scale_op)
+    block.append(result_op)
+    block.append(linalg.YieldOp([result_op.result]))
+
+    return op
+
+
 def where_op(
     node: WhereOp,
     symbol_table: dict[tuple[str, int], ir.Operation],
@@ -12945,6 +13033,7 @@ ops_registry = {
     "LogSoftmaxOp": log_softmax_op,
     "CloneOp": clone_op,
     "SiluOp": silu_op,
+    "GeluOp": gelu_op,
     "AddOp": add_op,
     "WhereOp": where_op,
     "ScalarTensorOp": scalar_tensor_op,

@@ -49,6 +49,8 @@ inline void tokenizeDecoder(Text<size_t, 2> &t, const std::string &vocab) {
     t.tokenizeMistral(vocab, BUDDY_DECODER_MAX_TOKEN_LEN);
   else if (kDecoderTokenizer == "phi")
     t.tokenizePhi(vocab, BUDDY_DECODER_MAX_TOKEN_LEN);
+  else if (kDecoderTokenizer == "gpt2")
+    t.tokenizeGpt2(vocab, BUDDY_DECODER_MAX_TOKEN_LEN);
   else
     t.tokenizeQwen3(vocab, BUDDY_DECODER_MAX_TOKEN_LEN);
 }
@@ -64,6 +66,8 @@ inline std::string detokenizeDecoder(Text<size_t, 2> &t) {
     return t.revertMistral();
   if (kDecoderTokenizer == "phi")
     return t.revertPhi();
+  if (kDecoderTokenizer == "gpt2")
+    return t.revertGpt2();
   return t.revertQwen3();
 }
 

@@ -1,0 +1,8 @@
+{
+  "hf_model_path": "Qwen/Qwen3-0.6B-Instruct",
+  "model_family": "qwen3",
+  "max_token_len": 1024,
+  "num_threads": 32,
+  "variant": "w8a16",
+  "quantization": "w8a16"
+}

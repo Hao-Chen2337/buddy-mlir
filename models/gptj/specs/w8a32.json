@@ -1,0 +1,8 @@
+{
+  "hf_model_path": "EleutherAI/gpt-j-6b",
+  "model_family": "gptj",
+  "max_token_len": 1024,
+  "num_threads": 32,
+  "variant": "w8a32",
+  "quantization": "w8a32"
+}

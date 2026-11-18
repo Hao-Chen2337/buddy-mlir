@@ -1,0 +1,8 @@
+{
+  "hf_model_path": "google/gemma-2-2b-it",
+  "model_family": "gemma",
+  "max_token_len": 1024,
+  "num_threads": 32,
+  "variant": "w4a16",
+  "quantization": "w4a16"
+}

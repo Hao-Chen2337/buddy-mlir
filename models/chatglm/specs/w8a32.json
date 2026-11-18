@@ -1,0 +1,8 @@
+{
+  "hf_model_path": "THUDM/chatglm2-6b",
+  "model_family": "chatglm",
+  "max_token_len": 1024,
+  "num_threads": 32,
+  "variant": "w8a32",
+  "quantization": "w8a32"
+}

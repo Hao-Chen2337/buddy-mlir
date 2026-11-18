@@ -1,0 +1,7 @@
+{
+  "hf_model_path": "openai-community/gpt2",
+  "model_family": "gpt2",
+  "variant": "f16",
+  "max_token_len": 1024,
+  "num_threads": 32
+}

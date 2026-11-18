@@ -144,6 +144,12 @@ option(BUDDY_BUILD_QWEN25_MODEL
 option(BUDDY_BUILD_LLAMA_MODEL
   "Build models/llama (Llama buddy-codegen .so/.rax + runner)"
   OFF)
+option(BUDDY_BUILD_GPT2_MODEL
+  "Build models/gpt2 (GPT-2 buddy-codegen .so/.rax + runner)"
+  OFF)
+option(BUDDY_BUILD_GPTNEOX_MODEL
+  "Build models/gptneox (GPT-NeoX/Pythia buddy-codegen .so/.rax + runner)"
+  OFF)
 option(BUDDY_BUILD_LLAMA31_TT_MODEL
   "Build models/llama31_tt and link the Tenstorrent Llama 3.1 runner into buddy-cli"
   OFF)

@@ -134,10 +134,39 @@ def text_decoder_config(hf: dict) -> dict:
     return text
 
 
+def normalize_hf_config(hf: dict) -> dict:
+    """Fill the Llama-style field names ``derive_shapes`` expects, so decoder
+    families that use a different naming (GPT-2's legacy ``n_embd``/``n_head``/
+    ``n_layer``) or that omit the GQA default (plain multi-head models) reach
+    the same canonical shape fields as the reference models.
+
+    This is a pure remap that does not change any value: it only adds the
+    canonical spelling of facts the config already carries, leaving every
+    existing (Llama/Qwen) config byte-for-byte identical.
+    """
+    hf = dict(hf)
+    # GPT-2 legacy naming, shared by StarCoder1 / CodeShell / Cerebras.
+    if "n_embd" in hf:
+        hf.setdefault("hidden_size", hf["n_embd"])
+        hf.setdefault("num_attention_heads", hf.get("n_head"))
+        hf.setdefault("num_hidden_layers", hf.get("n_layer"))
+        # GPT-2 leaves n_inner unset meaning 4 * n_embd (feed-forward size).
+        hf.setdefault(
+            "intermediate_size", hf.get("n_inner") or 4 * hf["n_embd"]
+        )
+        hf.setdefault("max_position_embeddings", hf.get("n_positions"))
+    # Plain multi-head attention: no GQA field, so KV heads == Q heads.
+    if "num_key_value_heads" not in hf:
+        hf["num_key_value_heads"] = hf.get("num_attention_heads")
+    return hf
+
+
 def load_hf_config(spec: dict, cli_hf_config: str | None) -> dict:
     """Load HuggingFace config.json with cascading fallbacks; a
     vision-language model gives its text decoder (text_decoder_config)."""
-    return text_decoder_config(_load_hf_config(spec, cli_hf_config))
+    return normalize_hf_config(
+        text_decoder_config(_load_hf_config(spec, cli_hf_config))
+    )
 
 
 def _load_hf_config(spec: dict, cli_hf_config: str | None) -> dict:

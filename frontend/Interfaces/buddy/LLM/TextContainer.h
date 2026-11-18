@@ -104,6 +104,14 @@ public:
   // as tokenizeLlama(), but with Phi's special tokens: <unk>=0 (pad),
   // <s>=1 (bos), <|endoftext|>=32000 (eos).
   void tokenizePhi(const std::string &vocab, size_t length);
+  // GPT-2 Tokenizer
+  // GPT-2 / GPT-NeoX / Pythia / StarCoder share the byte-level BPE codec:
+  // raw UTF-8 is mapped to BPE-encoded bytes with 'Ġ' as the space marker
+  // (the same bytes_to_unicode table as Qwen3), then tokenized with the same
+  // DP longest-match search as tokenizeQwen3().  The special-token ids are
+  // read from the vocab itself (<|endoftext|>), which is 50256 for GPT-2 and
+  // 0 for GPT-NeoX, so one method covers both families.
+  void tokenizeGpt2(const std::string &vocab, size_t length);
 
   // Revert the ids into tokens.
   // This function initializes the conversion from Text memref to a string.
@@ -116,6 +124,7 @@ public:
   std::string revertGemma4();
   std::string revertMistral();
   std::string revertPhi();
+  std::string revertGpt2();
 
   // Get sequence length
   size_t getTokenCnt() { return this->tokenCnt; }
@@ -707,6 +716,83 @@ void Text<T, N>::tokenizeQwen3(const std::string &vocab, size_t length) {
   }
 }
 
+// GPT-2 Tokenizer
+template <typename T, size_t N>
+void Text<T, N>::tokenizeGpt2(const std::string &vocab, size_t length) {
+  // Initialize container members.
+  this->offset = 0;
+  this->sizes[0] = 1;
+  this->sizes[1] = length;
+  this->setStrides();
+  size_t size = this->product(this->sizes);
+  this->allocated = (T *)malloc(sizeof(T) * size);
+  this->aligned = this->allocated;
+
+  // Load Vocab, then read the special-token ids from it.  GPT-2 uses
+  // <|endoftext|> = 50256 for bos/eos/unk/pad; GPT-NeoX/Pythia use 0.
+  loadVocab(vocab);
+  size_t eosId = 50256;
+  auto eosIt = tokenToIdMap.find("<|endoftext|>");
+  if (eosIt != tokenToIdMap.end())
+    eosId = eosIt->second;
+  this->bos = eosId;
+  this->eos = eosId;
+  this->unk = eosId;
+  this->pad = eosId;
+
+  // No leading BOS: GPT-2 / GPT-NeoX are trained on raw text.
+  tokenCnt = 0;
+
+  // Byte-level BPE encode (space -> 'Ġ', control bytes -> mapped code points).
+  std::string bpeEncodedStr = this->bytes_to_bpe_string(this->str);
+
+  // DP longest-match over the BPE-encoded string (same as tokenizeQwen3).
+  int n = bpeEncodedStr.length();
+  std::vector<float> score(n + 1, -1e10);
+  std::vector<size_t> prev_token_id(n + 1, 0);
+  std::vector<int> prev_pos(n + 1, 0);
+  score[0] = 0;
+
+  for (int i = 0; i < n; i++) {
+    if (score[i] < -1e9)
+      continue;
+    for (int sub_len = 1; sub_len <= std::min(64, n - i); sub_len++) {
+      std::string sub = bpeEncodedStr.substr(i, sub_len);
+      auto it = tokenToIdMap.find(sub);
+      if (it != tokenToIdMap.end()) {
+        float token_score = (float)sub_len * sub_len;
+        float current_score = score[i] + token_score;
+        int next_idx = i + sub_len;
+        if (current_score > score[next_idx]) {
+          score[next_idx] = current_score;
+          prev_token_id[next_idx] = it->second;
+          prev_pos[next_idx] = i;
+        }
+      }
+    }
+  }
+
+  // Backtrack and fill aligned (forward order).
+  std::vector<size_t> res;
+  int curr = n;
+  while (curr > 0) {
+    if (score[curr] < -1e9) {
+      curr--;
+      continue;
+    }
+    res.push_back(prev_token_id[curr]);
+    curr = prev_pos[curr];
+  }
+  for (auto it = res.rbegin(); it != res.rend() && tokenCnt < length; ++it) {
+    this->aligned[tokenCnt++] = *it;
+  }
+
+  // Padding.
+  for (size_t i = tokenCnt; i < length; i++) {
+    this->aligned[i] = pad;
+  }
+}
+
 // Qwen3-VL Tokenizer
 template <typename T, size_t N>
 void Text<T, N>::tokenizeQwen3VL(const std::string &vocab, size_t length,
@@ -1019,6 +1105,64 @@ template <typename T, size_t N> std::string Text<T, N>::revertQwen3() {
 
   std::string dst(byte_buffer.begin(), byte_buffer.end());
   // Remove leading space if present
+  if (!dst.empty() && (unsigned char)dst[0] == 32) {
+    dst.erase(0, 1);
+  }
+  return dst;
+}
+
+template <typename T, size_t N> std::string Text<T, N>::revertGpt2() {
+  // Same byte-level BPE decoding as revertQwen3(), but the end-of-text id is
+  // read from the vocab (<|endoftext|> = 50256 for GPT-2, 0 for GPT-NeoX) and
+  // stored in this->eos by tokenizeGpt2().
+  std::vector<unsigned char> byte_buffer;
+  const int EOS_ID = this->eos;
+
+  constexpr unsigned int kMaxBpeCodePoint = 323;
+
+  for (size_t i = 0; i < this->tokenCnt; i++) {
+    int id = this->aligned[i];
+    if (id == EOS_ID)
+      break;
+
+    const std::string &token = this->idToTokenVec[id];
+
+    for (size_t j = 0; j < token.length();) {
+      unsigned char c = (unsigned char)token[j];
+      unsigned int code = 0;
+      int len = 0;
+
+      if (c < 0x80) {
+        code = c;
+        len = 1;
+      } else if ((c & 0xE0) == 0xC0) {
+        code = (c & 0x1F) << 6 | (token[j + 1] & 0x3F);
+        len = 2;
+      } else if ((c & 0xF0) == 0xE0) {
+        code = (c & 0x0F) << 12 | (token[j + 1] & 0x3F) << 6 |
+               (token[j + 2] & 0x3F);
+        len = 3;
+      } else if ((c & 0xF8) == 0xF0) {
+        code = (c & 0x07) << 18 | (token[j + 1] & 0x3F) << 12 |
+               (token[j + 2] & 0x3F) << 6 | (token[j + 3] & 0x3F);
+        len = 4;
+      } else {
+        j++;
+        continue;
+      }
+
+      if (code <= kMaxBpeCodePoint) {
+        byte_buffer.push_back(this->revert_single_bpe_char(code));
+      } else {
+        for (int k = 0; k < len; ++k)
+          byte_buffer.push_back((unsigned char)token[j + k]);
+      }
+
+      j += len;
+    }
+  }
+
+  std::string dst(byte_buffer.begin(), byte_buffer.end());
   if (!dst.empty() && (unsigned char)dst[0] == 32) {
     dst.erase(0, 1);
   }

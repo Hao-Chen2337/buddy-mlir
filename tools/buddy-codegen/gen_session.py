@@ -1744,17 +1744,22 @@ def gen_impl(config: dict) -> str:
         p(
             f"  impl_->prefillFn(&impl_->prefillResultAbi, {weight_addrs_internal}, &tokens);"
         )
-        p("  const uint64_t elemsPerLayer =")
-        p("      (uint64_t)cfg_.headNum * cfg_.maxTokenLen * cfg_.hiddenSize;")
         p("  const uint64_t prefillLogitsElems =")
         p("      (uint64_t)cfg_.maxTokenLen * cfg_.vocabSize;")
         p("  std::memcpy(impl_->prefillStateAbi.logits().getData(),")
         p("              impl_->prefillResultAbi.logits().getData(),")
         p(f"              prefillLogitsElems * {logits_sizeof});")
         p("  for (int i = 0; i < cfg_.kvLayers; ++i) {")
-        p("    std::memcpy(impl_->decodeStateAbi.kv(i).getData(),")
-        p("                impl_->prefillResultAbi.kv(i).getData(),")
-        p(f"                elemsPerLayer * {kv_sizeof});")
+        p(
+            "    // Prefill may return a KV slot as a strided subview (e.g. the V"
+        )
+        p(
+            "    // slice of an interleaved QKV transpose). copyFrom handles both"
+        )
+        p("    // strided and contiguous sources.")
+        p(
+            "    impl_->decodeStateAbi.kv(i).copyFrom(impl_->prefillResultAbi.kv(i));"
+        )
         p("  }")
         p(
             "  intptr_t kvShape[4] = {1, cfg_.headNum, cfg_.maxTokenLen, cfg_.hiddenSize};"

@@ -167,6 +167,124 @@ DECODER_MODELS = {
         "build": False,
         "note": "tokenizer ready; needs partial-RoPE/no-bias path",
     },
+    # ── llama.cpp parity scaffolds (coverage-first, NOT end-to-end) ──────────
+    # Each is one *distinct operator wall* beyond the Llama blueprint.  The rest
+    # of llama.cpp's decoder-only arches that are NOT listed here fold into one
+    # of the families above: every MoE text model (Mixtral, Qwen2/3-MoE, Grok,
+    # DBRX, OLMoE, GLM4-MoE, PHIMoE, Granite-MoE, Cohere2-MoE, DeepSeek-V3, ...)
+    # reuses the "deepseek_r1" MoE-routing pattern, and Llama/Qwen/InternLM/...
+    # descendants are plain spec variants of the families above.  Non-attention
+    # (Mamba/SSM/RWKV/hybrid) and BERT/T5/embedding/multimodal are out of scope.
+    "gpt2": {
+        "display": "GPT-2",
+        "tokenizer": "gpt2",  # byte-level BPE with 'Ġ' space marker (tokenizeGpt2/revertGpt2)
+        "eos": 50256,  # <|endoftext|>
+        "pad": 50256,
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "GPT2",
+        "cmake_upper": "GPT2",
+        "build": True,
+        "vocab": "examples/BuddyGpt2/vocab.txt",
+        "note": "learned absolute position embeddings + LayerNorm + GELU; covers GPT-2/StarCoder1/CodeShell/Cerebras",
+    },
+    "gptneox": {
+        "display": "GPT-NeoX",
+        "tokenizer": "gpt2",  # byte-level BPE with 'Ġ' (tokenizeGpt2/revertGpt2)
+        "eos": 0,  # <|endoftext|>
+        "pad": 1,  # <|padding|>
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "GPTNEOX",
+        "cmake_upper": "GPTNEOX",
+        "build": True,
+        "vocab": "examples/BuddyGptneox/vocab.txt",
+        "note": "neox RoPE (rotary half-dim) + parallel attention/MLP; covers GPT-NeoX/Pythia/StableLM/Dolly",
+    },
+    "falcon": {
+        "display": "Falcon",
+        "tokenizer": "llama",  # byte-level BPE; own vocab pending
+        "eos": None,
+        "pad": None,
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "FALCON",
+        "cmake_upper": "FALCON",
+        "build": False,
+        "note": "ALiBi position + parallel attention/MLP + multi-query; covers Falcon/RefinedWeb",
+    },
+    "bloom": {
+        "display": "Bloom",
+        "tokenizer": "llama",  # byte-level BPE (custom pretokenizer); own vocab pending
+        "eos": None,
+        "pad": None,
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "BLOOM",
+        "cmake_upper": "BLOOM",
+        "build": False,
+        "note": "ALiBi position + LayerNorm + GELU; covers Bloom/BLOOMZ",
+    },
+    "baichuan": {
+        "display": "Baichuan",
+        "tokenizer": "mistral",  # SentencePiece; own vocab pending
+        "eos": None,
+        "pad": None,
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "BAICHUAN",
+        "cmake_upper": "BAICHUAN",
+        "build": False,
+        "note": "ALiBi position + W_pack qkv layout; covers Baichuan-1/2",
+    },
+    "chatglm": {
+        "display": "ChatGLM",
+        "tokenizer": "mistral",  # SentencePiece; own vocab pending
+        "eos": None,
+        "pad": None,
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "CHATGLM",
+        "cmake_upper": "CHATGLM",
+        "build": False,
+        "note": "GLM 2D RoPE + prefix-LM attention mask; covers ChatGLM2/3/GLM4",
+    },
+    "mpt": {
+        "display": "MPT",
+        "tokenizer": "mistral",  # GPT-NeoX SentencePiece; own vocab pending
+        "eos": None,
+        "pad": None,
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "MPT",
+        "cmake_upper": "MPT",
+        "build": False,
+        "note": "ALiBi position + no bias; covers MPT",
+    },
+    "gptj": {
+        "display": "GPT-J",
+        "tokenizer": "llama",  # GPT-2 byte-level BPE; own vocab pending
+        "eos": None,
+        "pad": None,
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "GPTJ",
+        "cmake_upper": "GPTJ",
+        "build": False,
+        "note": "rotary (full-dim) + parallel attention/MLP, no MLP bias; covers GPT-J",
+    },
+    "openelm": {
+        "display": "OpenELM",
+        "tokenizer": "llama",  # Llama-style byte-level BPE; own vocab pending
+        "eos": None,
+        "pad": None,
+        "extra_stop": [],
+        "default_spec": "f16.json",
+        "cmake_prefix": "OPENELM",
+        "cmake_upper": "OPENELM",
+        "build": False,
+        "note": "RMSNorm + no bias + GQA + per-layer scaling; covers OpenELM",
+    },
 }
 
 

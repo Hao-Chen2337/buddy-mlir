@@ -1,0 +1,8 @@
+{
+  "hf_model_path": "mistralai/Mistral-7B-Instruct-v0.1",
+  "model_family": "mistral",
+  "max_token_len": 1024,
+  "num_threads": 32,
+  "variant": "w4a16",
+  "quantization": "w4a16"
+}
