@@ -4171,6 +4171,34 @@ def argmax_op(node: ArgMaxOp, symbol_table):
     return argmax
 
 
+def _repeat_kv_heads(tensor, shape, group_size, compute_dtype):
+    """
+    GQA repeat_kv: [B, H_kv, S, D] -> [B, H_kv * group_size, S, D].
+
+    Inserts a size-1 group dim, tiles it group_size times, and folds it back
+    into the head dim, so head h lands on KV head h // group_size (the same
+    mapping as flash_attention_for_cpu_prefill_op / gqa_attention_fused_op).
+    """
+    tensor = tosa.ReshapeOp(
+        tensor,
+        _create_shape_operand([shape[0], shape[1], 1, shape[2], shape[3]]),
+    ).result
+    tensor = tosa.TileOp(
+        ir.RankedTensorType.get(
+            [shape[0], shape[1], group_size, shape[2], shape[3]],
+            compute_dtype,
+        ),
+        tensor,
+        _create_shape_operand([1, 1, group_size, 1, 1]),
+    ).result
+    return tosa.ReshapeOp(
+        tensor,
+        _create_shape_operand(
+            [shape[0], shape[1] * group_size, shape[2], shape[3]]
+        ),
+    ).result
+
+
 def scaled_dot_product_flash_attention_for_cpu_op(
     node: ScaledDotProductFlashAttentionForCpuOp, symbol_table
 ):
@@ -4246,6 +4274,40 @@ def scaled_dot_product_flash_attention_for_cpu_op(
                 attn_mask = tosa.ReshapeOp(attn_mask, attn_mask_operand)
             attn_bias = tosa.AddOp(attn_bias.type, attn_bias, attn_mask).result
 
+    # f16/bf16 scores at decode magnitude have ULP >= 1.0 (a scaled QK^T score
+    # of ~1024 rounds to the nearest integer), which collapses near-tie logits
+    # and flips the argmax versus prefill's f32 kernel. Compute attention in
+    # f32 for f16/bf16 inputs, mirroring flash_attention_for_cpu_prefill_op and
+    # gqa_attention_fused_op, and truncate the output back to the input dtype.
+    compute_dtype = mlir_dtype
+    if mlir_dtype in (ir.F16Type.get(), ir.BF16Type.get()):
+        compute_dtype = ir.F32Type.get()
+    need_cast = compute_dtype != mlir_dtype
+
+    def cast_tensor(t, target_dtype):
+        if t.type.element_type == target_dtype:
+            return t
+        return tosa.CastOp(
+            ir.RankedTensorType.get(t.type.shape, target_dtype), t
+        ).result
+
+    query = cast_tensor(query, compute_dtype)
+    key = cast_tensor(key, compute_dtype)
+    value = cast_tensor(value, compute_dtype)
+    attn_bias = cast_tensor(attn_bias, compute_dtype)
+
+    # GQA: query heads may exceed KV heads (e.g. Qwen2.5-0.5B is 14 vs 2).
+    # Repeat each KV head group_size times (interleaved as h // group_size,
+    # matching flash_attention_for_cpu_prefill_op) so the batch_matmul below
+    # keeps its MHA-shaped [batch*heads, L/S, D] inputs. group_size == 1
+    # (MHA) inserts no ops, so that path stays bit-for-bit unchanged.
+    group_size = query_shape[1] // key_shape[1]
+    kv_heads = key_shape[1]
+    if group_size > 1:
+        kv_heads = query_shape[1]
+        key = _repeat_kv_heads(key, key_shape, group_size, compute_dtype)
+        value = _repeat_kv_heads(value, value_shape, group_size, compute_dtype)
+
     # Matrix multiplication of query and key
     query_reshape_operand = _create_shape_operand(
         [
@@ -4257,21 +4319,23 @@ def scaled_dot_product_flash_attention_for_cpu_op(
     query_reshape_op = tosa.ReshapeOp(query, query_reshape_operand)
     key_reshape_operand = _create_shape_operand(
         [
-            key_shape[0] * key_shape[1],
+            key_shape[0] * kv_heads,
             key_shape[2],
             key_shape[3],
         ]
     )
     key_reshape_op = tosa.ReshapeOp(key, key_reshape_operand)
     matmul_result_shp = [
-        key_shape[0] * key_shape[1],
+        key_shape[0] * kv_heads,
         query_shape[2],
         key_shape[2],
     ]
-    matmul_result_type = ir.RankedTensorType.get(matmul_result_shp, mlir_dtype)
-    element = mlir_element_attr_get(dtype, 0.0)
+    matmul_result_type = ir.RankedTensorType.get(
+        matmul_result_shp, compute_dtype
+    )
+    element = ir.FloatAttr.get(compute_dtype, 0.0)
     matmul_result_buffer = splat_tensor_value(
-        matmul_result_shp, mlir_dtype, element
+        matmul_result_shp, compute_dtype, element
     )
     generic_map = ir.AffineMap.get_permutation([0, 1, 2, 3])
     matmul_op = linalg.BatchMatmulOp(
@@ -4286,7 +4350,7 @@ def scaled_dot_product_flash_attention_for_cpu_op(
         cast="cast_signed",
     )
     linalg.fill_builtin_region(matmul_op.operation)
-    if mlir_dtype == ir.F16Type.get():
+    if not need_cast and mlir_dtype == ir.F16Type.get():
         f16_max_val = 65504.0
         f16_min_val = -65504.0
         min_fp_attr = ir.FloatAttr.get(ir.F16Type.get(), f16_min_val)
@@ -4298,7 +4362,7 @@ def scaled_dot_product_flash_attention_for_cpu_op(
             min_fp_attr,
             max_fp_attr,
         )
-    elif mlir_dtype == ir.BF16Type.get():
+    elif not need_cast and mlir_dtype == ir.BF16Type.get():
         # BF16 has the same range as F32 but lower precision
         bf16_max_val = 3.4028235e38
         bf16_min_val = -3.4028235e38
@@ -4312,9 +4376,9 @@ def scaled_dot_product_flash_attention_for_cpu_op(
             max_fp_attr,
         )
     # Multiply result by scale factor
-    scale_factor_attr = mlir_element_attr_get(dtype, scale_factor)
+    scale_factor_attr = ir.FloatAttr.get(compute_dtype, float(scale_factor))
     scale_factor = splat_tensor_value(
-        matmul_result_shp, mlir_dtype, scale_factor_attr
+        matmul_result_shp, compute_dtype, scale_factor_attr
     )
     shift = _create_mul_shift_operand()
     mul_op = tosa.MulOp(matmul_result_type, matmul_op, scale_factor, shift)
@@ -4348,18 +4412,20 @@ def scaled_dot_product_flash_attention_for_cpu_op(
     # Multiply the result by the value tensor.
     value_reshape_operand = _create_shape_operand(
         [
-            key_shape[0] * key_shape[1],
+            key_shape[0] * kv_heads,
             value_shape[2],
             value_shape[3],
         ]
     )
     value_reshape_op = tosa.ReshapeOp(value, value_reshape_operand)
     matmul_result_shp = matmul_result_shp = [
-        key_shape[0] * key_shape[1],
+        key_shape[0] * kv_heads,
         query_shape[2],
         value_shape[3],
     ]
-    matmul_result_type = ir.RankedTensorType.get(matmul_result_shp, mlir_dtype)
+    matmul_result_type = ir.RankedTensorType.get(
+        matmul_result_shp, compute_dtype
+    )
     softmax_zp = _create_zero_point_tensor(softmax_result.result)
     value_zp = _create_zero_point_tensor(value_reshape_op.result)
     matmul_op = tosa.MatMulOp(
@@ -4369,8 +4435,16 @@ def scaled_dot_product_flash_attention_for_cpu_op(
         softmax_zp,
         value_zp,
     )
+    if need_cast:
+        matmul_op = tosa.CastOp(
+            ir.RankedTensorType.get(matmul_result_shp, mlir_dtype),
+            matmul_op.result,
+        )
+        log_sumexp = tosa.CastOp(
+            ir.RankedTensorType.get(new_shape, mlir_dtype), log_sumexp
+        ).result
     result_reshape_operand = _create_shape_operand(
-        [key_shape[0], key_shape[1], query_shape[2], value_shape[3]]
+        [key_shape[0], kv_heads, query_shape[2], value_shape[3]]
     )
     result_reshape_op = tosa.ReshapeOp(matmul_op.result, result_reshape_operand)
 
