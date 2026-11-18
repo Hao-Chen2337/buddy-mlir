@@ -53,6 +53,17 @@ using namespace affine;
 
 namespace {
 
+/// The decode vectorization walks B along its innermost dimension (`n`) and
+/// reduces over the middle one (`k`), i.e. the default linalg.batch_matmul
+/// maps A:(d0,d1,d3), B:(d0,d3,d2), C:(d0,d1,d2). A batch_matmul whose B is
+/// transposed -- reduction on B's innermost dim, B:(d0,d2,d3), as GPT-2's
+/// Q @ K^T emits -- must not be rewritten by this pattern; it is left to the
+/// generic linalg lowering, which handles arbitrary maps correctly.
+static bool hasDefaultBatchMatmulIndexingMaps(linalg::BatchMatmulOp op) {
+  return linalg::BatchMatmulOp::isDefaultIndexingMaps(
+      op->getAttr("indexing_maps"));
+}
+
 class BatchMatMulVectorizationDecodePattern : public ConversionPattern {
 public:
   explicit BatchMatMulVectorizationDecodePattern(MLIRContext *context,
@@ -70,6 +81,12 @@ public:
     auto loc = op->getLoc();
     auto ctx = op->getContext();
 
+    // Only rewrite the default (non-transposed) batch_matmul; a transposed B
+    // (reduction on B's innermost dim) is handled by the generic linalg
+    // lowering, not by this N-dimension vectorization.
+    if (!hasDefaultBatchMatmulIndexingMaps(cast<linalg::BatchMatmulOp>(op)))
+      return failure();
+
     // Retrieve input tensors A, B, and C.
     Value A = op->getOperand(0);
     Value B = op->getOperand(1);
@@ -78,8 +95,26 @@ public:
     // Acquire the element type of input tensors.
     Type elementType =
         mlir::cast<mlir::MemRefType>(A.getType()).getElementType();
+
+    // The output's innermost dimension (bCol, the "N" of the batch matmul) is
+    // walked with the vector size as its step, so a row narrower than the
+    // vector would be written past its end on every iteration (e.g. GPT-2's
+    // head_dim = 64 against vector-size = 128). Clamp the vector size to the
+    // largest power of two that still divides the static dimension, so the
+    // last vector element lands exactly on the row boundary. Models whose N
+    // already divides vecSize (e.g. 128) keep the exact same vectorization.
+    int64_t effectiveVecSize = vecSize;
+    auto cMemRefType = mlir::cast<mlir::MemRefType>(C.getType());
+    if (cMemRefType.hasStaticShape() && cMemRefType.getShape().size() == 3) {
+      int64_t bColStatic = cMemRefType.getShape()[2];
+      if (bColStatic > 0) {
+        while (effectiveVecSize > bColStatic ||
+               bColStatic % effectiveVecSize != 0)
+          effectiveVecSize /= 2;
+      }
+    }
     VectorType vectorTy =
-        mlir::VectorType::get({vecSize}, elementType, {scalable});
+        mlir::VectorType::get({effectiveVecSize}, elementType, {scalable});
 
     // Define constants.
     llvm::SmallVector<Value, 8> constantVals;
@@ -88,7 +123,8 @@ public:
           arith::ConstantOp::create(rewriter, loc, rewriter.getIndexAttr(i));
       constantVals.push_back(val);
     }
-    Value vlStep = arith::ConstantIndexOp::create(rewriter, loc, vecSize);
+    Value vlStep =
+        arith::ConstantIndexOp::create(rewriter, loc, effectiveVecSize);
     if (scalable) {
       Value vscale = vector::VectorScaleOp::create(rewriter, loc);
       vlStep = arith::MulIOp::create(rewriter, loc, vlStep, vscale);
@@ -225,6 +261,12 @@ void BatchMatMulVectorizationDecodePass::runOnOperation() {
                        scf::SCFDialect, memref::MemRefDialect, VectorDialect>();
   target.addLegalOp<ModuleOp, func::FuncOp, func::ReturnOp>();
   target.addLegalOp<linalg::FillOp>();
+  target.addDynamicallyLegalOp<linalg::BatchMatmulOp>(
+      [](linalg::BatchMatmulOp op) {
+        // Transposed-B batch_matmuls are lowered correctly by the generic
+        // linalg path, so leave them alone.
+        return !hasDefaultBatchMatmulIndexingMaps(op);
+      });
 
   RewritePatternSet patterns(context);
   bool isScalable = (vectorType == "scalable");

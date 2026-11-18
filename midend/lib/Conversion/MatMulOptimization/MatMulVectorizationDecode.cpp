@@ -124,7 +124,15 @@ public:
       return failure();
 
     Type elementType = cType.getElementType();
+    // f16/bf16 matmuls accumulate in f32 to avoid the running-sum rounding
+    // error of a single f16 FMA chain over the full k dimension (f16 ULP at
+    // ~1076 magnitude is 1.0, which reshuffles near-degenerate logits).
+    Type accType = elementType;
+    bool promoteToF32 = elementType.isF16() || elementType.isBF16();
+    if (promoteToF32)
+      accType = rewriter.getF32Type();
     auto vectorType = VectorType::get({vecSize}, elementType, {scalable});
+    auto accVectorType = VectorType::get({vecSize}, accType, {scalable});
 
     Value c0 = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value c1 = arith::ConstantIndexOp::create(rewriter, loc, 1);
@@ -149,11 +157,15 @@ public:
           Value cVec;
           if (zeroInitialized) {
             Value zero = arith::ConstantOp::create(
-                builder, loc, elementType, builder.getZeroAttr(elementType));
-            cVec = vector::BroadcastOp::create(builder, loc, vectorType, zero);
+                builder, loc, accType, builder.getZeroAttr(accType));
+            cVec =
+                vector::BroadcastOp::create(builder, loc, accVectorType, zero);
           } else {
-            cVec = vector::LoadOp::create(builder, loc, vectorType, C,
-                                          ValueRange{c0, nIdx});
+            Value loaded = vector::LoadOp::create(builder, loc, vectorType, C,
+                                                  ValueRange{c0, nIdx});
+            cVec = promoteToF32 ? (Value)arith::ExtFOp::create(
+                                      builder, loc, accVectorType, loaded)
+                                : (Value)loaded;
           }
           auto sumIter = scf::ForOp::create(
               builder, loc, c0, k, c1, ValueRange{cVec},
@@ -161,16 +173,27 @@ public:
                   ValueRange iterArgs) {
                 Value aElem = memref::LoadOp::create(builder, loc, A,
                                                      ValueRange{c0, kIdx});
-                Value aVec = vector::BroadcastOp::create(builder, loc,
-                                                         vectorType, aElem);
-                Value bVec = vector::LoadOp::create(builder, loc, vectorType, B,
-                                                    ValueRange{kIdx, nIdx});
+                Value aScalar = promoteToF32 ? (Value)arith::ExtFOp::create(
+                                                   builder, loc, accType, aElem)
+                                             : (Value)aElem;
+                Value aVec = vector::BroadcastOp::create(
+                    builder, loc, accVectorType, aScalar);
+                Value bLoaded = vector::LoadOp::create(
+                    builder, loc, vectorType, B, ValueRange{kIdx, nIdx});
+                Value bVec = promoteToF32
+                                 ? (Value)arith::ExtFOp::create(
+                                       builder, loc, accVectorType, bLoaded)
+                                 : (Value)bLoaded;
                 Value res = vector::FMAOp::create(builder, loc, aVec, bVec,
                                                   iterArgs.front());
                 scf::YieldOp::create(builder, loc, res);
               });
 
-          vector::StoreOp::create(builder, loc, sumIter.getResult(0), C,
+          Value result = sumIter.getResult(0);
+          Value toStore = promoteToF32 ? (Value)arith::TruncFOp::create(
+                                             builder, loc, vectorType, result)
+                                       : (Value)result;
+          vector::StoreOp::create(builder, loc, toStore, C,
                                   ValueRange{c0, nIdx});
         });
 
