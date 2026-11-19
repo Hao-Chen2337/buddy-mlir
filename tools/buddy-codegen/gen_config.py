@@ -205,6 +205,12 @@ def _count_params_torch(model_path: str) -> dict:
         else:
             other_elements += p.numel()
 
+    # Dynamo captures RoPE's inv_freq buffer into the weight file; count it,
+    # but skip original_inv_freq, which is never read in the forward pass.
+    for name, buf in model.named_buffers():
+        if "inv_freq" in name and "original_inv_freq" not in name:
+            total += buf.numel()
+
     del model
     return {
         "total": total,
