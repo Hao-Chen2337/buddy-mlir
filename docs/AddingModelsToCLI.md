@@ -27,7 +27,8 @@ it with `runner_library = "file:deepseek_r1_runner.so"`.
 1. Add a small **variant spec** under `models/deepseek_r1/specs/` describing:
    - `model_family`, `variant` (e.g. `f16`, `bf16`, `w8a16`)
    - optional `hf_model_path` for HuggingFace alignment
-   - optional `weights_override` (element counts, etc.)
+   - `weights_override` (element counts): only needed when torch is unavailable
+     (e.g. the K3 cross-compile); otherwise `gen_config` counts automatically.
 2. **`gen_config.py`** expands **`VARIANT_PRECISION`**, **`VARIANT_WEIGHT_TEMPLATES`**, and related tables into a full **`config.json`** (shapes, weight tags, MLIR/C++ types).
 3. **Build:**
    `python3 tools/buddy-codegen/build_model.py --spec models/deepseek_r1/specs/<variant>.json`
